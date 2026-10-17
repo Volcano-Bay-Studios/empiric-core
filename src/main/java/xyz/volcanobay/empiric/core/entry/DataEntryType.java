@@ -54,7 +54,7 @@ public class DataEntryType<T> {
     }
 
     public String directory() {
-        return id.replace(':', '/');
+        return id.substring(id.indexOf(':') + 1);
     }
 
     public Set<String> reserved() {

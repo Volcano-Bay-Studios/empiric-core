@@ -148,7 +148,7 @@ public abstract class FieldIO {
         @Override
         public void write(DataBuffer buffer, Object owner, DataContext context) {
             Object value = get(owner);
-            if (value == null) {
+            if (value == null && !layout.optional()) {
                 throw new DataException(layout.describe() + " is null, mark it optional to allow null");
             }
             slot.write(buffer, value, context);
