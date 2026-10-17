@@ -1,0 +1,36 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+base {
+    archivesName = 'empiric-core'
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(java_version)
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    api "it.unimi.dsi:fastutil:${fastutil_version}"
+}
+
+jar {
+    from(rootProject.file('LICENSE')) {
+        rename { "${it}_empiric-core" }
+    }
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            artifactId = 'empiric-core'
+            from components.java
+        }
+    }
+}
