@@ -86,35 +86,33 @@ public abstract class ManagedSpatialNetwork {
         }
 
 
+        Set<Integer> existingIds = new HashSet<>();
+        for (SpatialPos p : members) {
+            int id = cache.get(p.x(), p.y(), p.z());
+            if (id != -1) {
+                existingIds.add(findRoot(id));
+            }
+        }
         int finalId;
-        if (!isDefaultNetwork) {
-            Set<Integer> existingIds = new HashSet<>();
-            for (SpatialPos p : members) {
-                int id = cache.get(p.x(), p.y(), p.z());
-                if (id != -1) {
-                    existingIds.add(findRoot(id));
-                }
-            }
-            if (existingIds.isEmpty()) {
-                finalId = idGenerator.getAndIncrement();
-                dsu.put(finalId, finalId);
-            } else {
-                Iterator<Integer> it = existingIds.iterator();
-                finalId = it.next();
-                while (it.hasNext()) {
-                    union(finalId, it.next());
-                }
-            }
-        } else {
+        if (isDefaultNetwork) {
             finalId = -2;
             dsu.put(-2, -2);
+        } else if (existingIds.isEmpty()) {
+            finalId = idGenerator.getAndIncrement();
+            dsu.put(finalId, finalId);
+        } else {
+            finalId = existingIds.iterator().next();
         }
+        // An overflowing flood fill absorbs every network it ran into.
+        for (int id : existingIds) {
+            union(finalId, id);
+        }
+        finalId = findRoot(finalId);
 
-        networkPositions.putIfAbsent(finalId, new HashSet<>());
         for (SpatialPos p : members) {
             cache.put(p.x(), p.y(), p.z(), finalId);
-            if (!isDefaultNetwork) {
-                networkPositions.get(finalId).add(p); // If it is the default network, we don't want to waste memory filling up these maps.
+            if (finalId != -2) {
+                networkPositions.computeIfAbsent(finalId, k -> new HashSet<>()).add(p); // If it is the default network, we don't want to waste memory filling up these maps.
             }
         }
         return finalId;
@@ -140,8 +138,11 @@ public abstract class ManagedSpatialNetwork {
             for (int r : neighborRoots) {
                 union(finalId, r);
             }
+            finalId = findRoot(finalId);
             cache.put(x, y, z, finalId);
-            networkPositions.computeIfAbsent(finalId, k -> new HashSet<>()).add(new SpatialPos(x, y, z));
+            if (finalId != -2) {
+                networkPositions.computeIfAbsent(finalId, k -> new HashSet<>()).add(new SpatialPos(x, y, z));
+            }
             update(finalId);
             return finalId;
         }
@@ -224,10 +225,217 @@ public abstract class ManagedSpatialNetwork {
             while (it.hasNext()) {
                 union(finalId, it.next());
             }
+            finalId = findRoot(finalId);
             cache.put(x, y, z, finalId);
-            networkPositions.computeIfAbsent(finalId, k -> new HashSet<>()).add(new SpatialPos(x, y, z));
+            if (finalId != -2) {
+                networkPositions.computeIfAbsent(finalId, k -> new HashSet<>()).add(new SpatialPos(x, y, z));
+            }
             update(finalId);
         }
+    }
+
+    /**
+     * Brings the cache in line with the world after the given points changed together.
+     * Points that stopped being members leave their network, which may split it, and new members join any cached network next to them.
+     * New members with no cached neighbor are left for discovery, so changes in untouched space cost nothing.
+     */
+    public void refreshPoints(Collection<SpatialPos> points) {
+        Map<Integer, Set<SpatialPos>> removed = new HashMap<>();
+        for (SpatialPos p : points) {
+            int raw = cache.get(p.x(), p.y(), p.z());
+            if (raw == -1 || isMember(p.x(), p.y(), p.z())) {
+                continue;
+            }
+            int rootId = findRoot(raw);
+            cache.remove(p.x(), p.y(), p.z());
+            Set<SpatialPos> oldSet = networkPositions.get(rootId);
+            if (oldSet != null) {
+                oldSet.remove(p);
+            }
+            removed.computeIfAbsent(rootId, k -> new LinkedHashSet<>()).add(p);
+        }
+        for (Map.Entry<Integer, Set<SpatialPos>> entry : removed.entrySet()) {
+            int rootId = entry.getKey();
+            Set<SpatialPos> neighbors = new LinkedHashSet<>();
+            for (SpatialPos p : entry.getValue()) {
+                for (SpatialPos n : getPhysicalNeighbors(p)) {
+                    int nRaw = cache.get(n.x(), n.y(), n.z());
+                    if (nRaw != -1 && findRoot(nRaw) == rootId && isMember(n.x(), n.y(), n.z())) {
+                        neighbors.add(n);
+                    }
+                }
+            }
+            if (rootId == -2) {
+                splitDefault(new ArrayList<>(neighbors));
+            } else {
+                handlePotentialSplit(new ArrayList<>(neighbors), rootId);
+            }
+            update(rootId);
+        }
+
+        List<SpatialPos> joined = new ArrayList<>();
+        List<SpatialPos> waiting = new ArrayList<>();
+        for (SpatialPos p : points) {
+            if (cache.get(p.x(), p.y(), p.z()) == -1 && isMember(p.x(), p.y(), p.z())) {
+                waiting.add(p);
+            }
+        }
+        boolean progress = true;
+        while (progress && !waiting.isEmpty()) {
+            progress = false;
+            Iterator<SpatialPos> it = waiting.iterator();
+            while (it.hasNext()) {
+                SpatialPos p = it.next();
+                if (hasCachedNeighbor(p)) {
+                    addPoint(p.x(), p.y(), p.z());
+                    joined.add(p);
+                    it.remove();
+                    progress = true;
+                }
+            }
+        }
+        // A finite network that now touches undiscovered members may have opened up, so flood from there.
+        for (SpatialPos p : joined) {
+            int raw = cache.get(p.x(), p.y(), p.z());
+            if (raw == -1 || findRoot(raw) == -2) {
+                continue;
+            }
+            for (SpatialPos n : getPhysicalNeighbors(p)) {
+                if (cache.get(n.x(), n.y(), n.z()) == -1 && canConnect(p.x(), p.y(), p.z(), n.x(), n.y(), n.z())) {
+                    getOrDiscover(n.x(), n.y(), n.z());
+                }
+            }
+        }
+    }
+
+    private boolean hasCachedNeighbor(SpatialPos p) {
+        for (SpatialPos n : getPhysicalNeighbors(p)) {
+            if (cache.get(n.x(), n.y(), n.z()) != -1 && canConnect(p.x(), p.y(), p.z(), n.x(), n.y(), n.z())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Splits enclosed pockets off the default network.
+     * The default network isn't tracked position by position, so this floods from every neighbor at once, one step each in turn, and stops as soon as
+     * only one flood is left running: that one is the open space, and every flood that ran dry first was a pocket.
+     * Floods also cross undiscovered members, since an overflowing discovery only caches part of what it saw, and a flood that grows past
+     * {@link #maxSize()} is open space.
+     */
+    private void splitDefault(List<SpatialPos> neighbors) {
+        int count = neighbors.size();
+        if (count <= 1) {
+            return;
+        }
+        int[] parent = new int[count];
+        List<Deque<SpatialPos>> queues = new ArrayList<>();
+        int[] sizes = new int[count];
+        boolean[] open = new boolean[count];
+        Map<SpatialPos, Integer> owner = new HashMap<>();
+        for (int i = 0; i < count; i++) {
+            parent[i] = i;
+            queues.add(new ArrayDeque<>(List.of(neighbors.get(i))));
+            sizes[i] = 1;
+            owner.put(neighbors.get(i), i);
+        }
+
+        while (true) {
+            boolean anyOpen = false;
+            int running = 0;
+            for (int i = 0; i < count; i++) {
+                if (parent[i] != i) {
+                    continue;
+                }
+                if (open[i]) {
+                    anyOpen = true;
+                } else if (!queues.get(i).isEmpty()) {
+                    running++;
+                }
+            }
+            if (running == 0 || (!anyOpen && running == 1)) {
+                break;
+            }
+            for (int i = 0; i < count; i++) {
+                if (parent[i] != i || open[i] || queues.get(i).isEmpty()) {
+                    continue;
+                }
+                SpatialPos curr = queues.get(i).poll();
+                for (SpatialPos n : getPhysicalNeighbors(curr)) {
+                    if (!canConnect(curr.x(), curr.y(), curr.z(), n.x(), n.y(), n.z())) {
+                        continue;
+                    }
+                    int raw = cache.get(n.x(), n.y(), n.z());
+                    if (raw == -1 ? !isMember(n.x(), n.y(), n.z()) : findRoot(raw) != -2) {
+                        continue;
+                    }
+                    Integer other = owner.get(n);
+                    if (other == null) {
+                        owner.put(n, i);
+                        queues.get(i).add(n);
+                        if (++sizes[i] > maxSize()) {
+                            open[i] = true;
+                        }
+                        continue;
+                    }
+                    int otherRoot = other;
+                    while (parent[otherRoot] != otherRoot) {
+                        otherRoot = parent[otherRoot];
+                    }
+                    if (otherRoot != i) {
+                        parent[otherRoot] = i;
+                        queues.get(i).addAll(queues.get(otherRoot));
+                        queues.get(otherRoot).clear();
+                        sizes[i] += sizes[otherRoot];
+                        open[i] |= open[otherRoot];
+                    }
+                }
+            }
+        }
+
+        // If every flood ran dry, the biggest keeps the default network.
+        int keep = -1;
+        boolean anyOpen = false;
+        for (int i = 0; i < count; i++) {
+            if (parent[i] == i && (open[i] || !queues.get(i).isEmpty())) {
+                anyOpen = true;
+            }
+        }
+        if (!anyOpen) {
+            for (int i = 0; i < count; i++) {
+                if (parent[i] == i && (keep == -1 || sizes[i] > sizes[keep])) {
+                    keep = i;
+                }
+            }
+        }
+        Map<Integer, List<SpatialPos>> pockets = new HashMap<>();
+        for (Map.Entry<SpatialPos, Integer> entry : owner.entrySet()) {
+            int root = entry.getValue();
+            while (parent[root] != root) {
+                root = parent[root];
+            }
+            if (root != keep && !open[root] && queues.get(root).isEmpty()) {
+                pockets.computeIfAbsent(root, k -> new ArrayList<>()).add(entry.getKey());
+            }
+        }
+        for (List<SpatialPos> pocket : pockets.values()) {
+            int newId = idGenerator.getAndIncrement();
+            dsu.put(newId, newId);
+            Set<SpatialPos> positions = new HashSet<>(pocket);
+            networkPositions.put(newId, positions);
+            for (SpatialPos p : positions) {
+                cache.put(p.x(), p.y(), p.z(), newId);
+            }
+            split(-2, newId);
+        }
+    }
+
+    /**
+     * The most members a flood may reach before it counts as open space.
+     */
+    protected int maxSize() {
+        return 100_000;
     }
 
     private Set<SpatialPos> performBFS(SpatialPos start, int rootId) {
@@ -338,13 +546,16 @@ public abstract class ManagedSpatialNetwork {
     private void union(int id1, int id2) {
         int r1 = findRoot(id1);
         int r2 = findRoot(id2);
+        // The default network always survives a merge.
+        if (r2 == -2) {
+            r2 = r1;
+            r1 = -2;
+        }
 
         if (r1 != r2) {
-            Set<SpatialPos> nodes1 = networkPositions.computeIfAbsent(r1, k -> new HashSet<>());
             Set<SpatialPos> nodes2 = networkPositions.remove(r2);
-
-            if (nodes2 != null) {
-                nodes1.addAll(nodes2);
+            if (r1 != -2 && nodes2 != null) {
+                networkPositions.computeIfAbsent(r1, k -> new HashSet<>()).addAll(nodes2);
             }
 
             dsu.put(r2, r1);

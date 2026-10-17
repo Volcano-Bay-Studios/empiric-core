@@ -26,6 +26,7 @@ public class ModuleType<M extends Module<A>, A extends Attachment> {
     private final Runnable onDisable;
     private final Set<DropPolicy> drops;
     private final List<ModuleType<?, ?>> requires;
+    final ModuleEventBus events = new ModuleEventBus();
     int index = -1;
     List<BehaviorKey<?>> behaviors = List.of();
     ObjectSpec<M> spec;
@@ -34,7 +35,7 @@ public class ModuleType<M extends Module<A>, A extends Attachment> {
     volatile boolean enabled;
 
     protected ModuleType(Builder<M, A, ?> builder) {
-        this.id = builder.id.id();
+        this.id = builder.id.empiriccore$id();
         this.moduleClass = builder.moduleClass;
         this.attachmentType = builder.attachmentType;
         this.factory = builder.factory;
@@ -79,6 +80,32 @@ public class ModuleType<M extends Module<A>, A extends Attachment> {
 
     public boolean detach(A attachment) {
         return attachment != null && EmpiricCore.modules().detach(attachment, this);
+    }
+
+    /**
+     * Listens to an event on every module of this type, and subscribes {@code modId} to the type.
+     */
+    public <E> void listen(String modId, ModuleEvent<E> event, ModuleEventListener<? super M, ? super E> listener) {
+        String owner = ModuleSystem.listenerId(modId);
+        events.add(owner, event, listener);
+        EmpiricCore.modules().subscribe(owner, this);
+    }
+
+    public boolean unlisten(String modId) {
+        String owner = ModuleSystem.listenerId(modId);
+        if (!events.remove(owner)) {
+            return false;
+        }
+        EmpiricCore.modules().unsubscribe(owner, this);
+        return true;
+    }
+
+    public <E> void fire(M module, ModuleEvent<E> event, E payload) {
+        EmpiricCore.modules().fire(module, event, payload);
+    }
+
+    public ModuleEventBus events() {
+        return events;
     }
 
     public String id() {

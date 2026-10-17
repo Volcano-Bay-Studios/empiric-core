@@ -164,7 +164,8 @@ public final class ObjectSpec<T> implements Spec<T> {
         }
     }
 
-    public void readDirty(DataBuffer buffer, T value, DataContext context) {
+    public BitSet readDirty(DataBuffer buffer, T value, DataContext context) {
+        BitSet read = new BitSet();
         int count = buffer.takeVarInt();
         for (int i = 0; i < count; i++) {
             int index = buffer.takeVarInt();
@@ -172,7 +173,9 @@ public final class ObjectSpec<T> implements Spec<T> {
                 throw new DataException(layout.type().getName() + " has no synced field at " + index);
             }
             synced[index].read(buffer, value, context);
+            read.set(index);
         }
+        return read;
     }
 
     @Override

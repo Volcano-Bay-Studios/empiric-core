@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -39,7 +38,7 @@ public final class ModuleSystem {
     private final SideState[] sides = {new SideState(), new SideState()};
     private final ModuleAttachmentType moduleAttachments;
     private final Map<String, byte[]> unreadStatics = new HashMap<>();
-    private final List<ModuleListener> listeners = new CopyOnWriteArrayList<>();
+    private final ModuleEventBus listeners = new ModuleEventBus();
     private Function<byte[], DataBuffer> buffers = ByteArrayDataBuffer::new;
     private BiConsumer<String, Throwable> errors = (message, error) -> {
         System.err.println(message);
@@ -64,8 +63,16 @@ public final class ModuleSystem {
         this.buffers = buffers;
     }
 
-    public void listen(ModuleListener listener) {
-        listeners.add(listener);
+    /**
+     * Listens to an event on modules of every type. Unlike {@link ModuleType#listen}, this subscribes nothing.
+     */
+    public <E> void listen(ModuleEvent<E> event, ModuleEventListener<Module<?>, ? super E> listener) {
+        listeners.add("global", event, listener);
+    }
+
+    public <E> void fire(Module<?> module, ModuleEvent<E> event, E payload) {
+        listeners.fire(module, event, payload, errors);
+        module.type.events.fire(module, event, payload, errors);
     }
 
     public void errorHandler(BiConsumer<String, Throwable> errors) {
@@ -223,6 +230,10 @@ public final class ModuleSystem {
         return "required_by:" + type.id();
     }
 
+    public static String listenerId(String modId) {
+        return "listener:" + modId;
+    }
+
     private ModuleType<?, ?> require(String typeId) {
         ModuleType<?, ?> type = typesById.get(typeId);
         if (type == null) {
@@ -337,9 +348,7 @@ public final class ModuleSystem {
         M module = type.create();
         install(attachment, type, module);
         module.onAttach();
-        for (ModuleListener listener : listeners) {
-            listener.attached(module);
-        }
+        fire(module, ModuleEvents.ATTACHED, null);
         return module;
     }
 
@@ -435,15 +444,10 @@ public final class ModuleSystem {
         }
         if (destroy) {
             module.onDetach();
+            fire(module, ModuleEvents.DETACHED, null);
         } else {
             module.onUnload();
-        }
-        for (ModuleListener listener : listeners) {
-            if (destroy) {
-                listener.detached(module);
-            } else {
-                listener.unloaded(module);
-            }
+            fire(module, ModuleEvents.UNLOADED, null);
         }
         module.attached = false;
         module.attachment.modules().set(module.type.index, null);
@@ -563,9 +567,7 @@ public final class ModuleSystem {
         install(attachment, type, module);
         load(module.children(), buffer, context);
         module.onLoad();
-        for (ModuleListener listener : listeners) {
-            listener.loaded(module);
-        }
+        fire(module, ModuleEvents.LOADED, null);
         return module;
     }
 
@@ -697,13 +699,14 @@ public final class ModuleSystem {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public void acceptRemote(Module<?> module) {
+    public void acceptRemote(Module<?> module, BitSet fields) {
         if (module.snapshot != null) {
             module.snapshot = ((ModuleType) module.type).spec.snapshot(module);
         }
         if (module.dirty != null) {
             module.dirty.clear();
         }
+        fire(module, ModuleEvents.SYNCED, new SyncedFields(module.type.spec, fields));
     }
 
     public void writeLocator(DataBuffer buffer, Module<?> module, DataContext context) {
