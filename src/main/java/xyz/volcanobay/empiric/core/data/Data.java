@@ -15,7 +15,7 @@ public @interface Data {
     String id() default "";
 
     /**
-     * On {@}
+     * On load, if {@link Encoding#KEYED}, will try to fetch fields from the alias fields if id misses
      */
     String[] aliases() default {};
 
