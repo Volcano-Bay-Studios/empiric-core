@@ -132,6 +132,17 @@ public final class ObjectSpec<T> implements Spec<T> {
         return snapshot;
     }
 
+    /**
+     * Re-snapshots the watched fields among {@code fields}, leaving the others to keep detecting local changes.
+     */
+    public void refreshSnapshot(T value, Object[] snapshot, BitSet fields) {
+        for (int i = 0; i < watched.length; i++) {
+            if (fields.get(watched[i])) {
+                snapshot[i] = synced[watched[i]].snapshot(value);
+            }
+        }
+    }
+
     public boolean detectChanges(T value, Object[] snapshot, BitSet dirty) {
         boolean changed = false;
         for (int i = 0; i < watched.length; i++) {

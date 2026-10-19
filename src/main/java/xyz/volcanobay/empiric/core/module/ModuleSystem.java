@@ -701,10 +701,10 @@ public final class ModuleSystem {
     @SuppressWarnings({"unchecked", "rawtypes"})
     public void acceptRemote(Module<?> module, BitSet fields) {
         if (module.snapshot != null) {
-            module.snapshot = ((ModuleType) module.type).spec.snapshot(module);
+            ((ModuleType) module.type).spec.refreshSnapshot(module, module.snapshot, fields);
         }
         if (module.dirty != null) {
-            module.dirty.clear();
+            module.dirty.andNot(fields);
         }
         fire(module, ModuleEvents.SYNCED, new SyncedFields(module.type.spec, fields));
     }

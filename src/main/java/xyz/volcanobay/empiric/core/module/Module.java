@@ -64,6 +64,10 @@ public abstract class Module<A extends Attachment> {
         EmpiricCore.modules().markDirty(this, type.spec().syncIndex(field));
     }
 
+    public final boolean isDirty(String field) {
+        return dirty != null && dirty.get(type.spec().syncIndex(field));
+    }
+
     protected void onAttach() {
     }
 
