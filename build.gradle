@@ -1,29 +1,25 @@
 plugins {
-    id 'java-library'
     id 'maven-publish'
-}
-
-base {
-    archivesName = 'empiric-core'
-}
-
-java {
-    toolchain.languageVersion = JavaLanguageVersion.of(java_version)
-    withSourcesJar()
+    id 'java'
 }
 
 repositories {
     mavenCentral()
 }
 
-dependencies {
-    api "it.unimi.dsi:fastutil:${fastutil_version}"
+java {
+    def javaVer = project.findProperty('java_version') ?: '21'
+    sourceCompatibility = JavaVersion.toVersion(javaVer)
+    targetCompatibility = JavaVersion.toVersion(javaVer)
 }
 
-jar {
-    from(rootProject.file('LICENSE')) {
-        rename { "${it}_empiric-core" }
-    }
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+dependencies {
+    def fastutilVer = project.findProperty('fastutil_version') ?: '8.5.12'
+    implementation "it.unimi.dsi:fastutil:${fastutilVer}"
 }
 
 publishing {
@@ -31,6 +27,22 @@ publishing {
         register('mavenJava', MavenPublication) {
             artifactId = 'empiric-core'
             from components.java
+        }
+    }
+
+    repositories {
+        mavenLocal()
+        maven {
+            url = "https://maven.ryanhcode.dev/releases/"
+
+            credentials {
+                username = "modog"
+                password = System.getenv("PRIVATE_MAVEN_TOKEN") ?: ""
+            }
+
+            authentication {
+                basic(BasicAuthentication)
+            }
         }
     }
 }
