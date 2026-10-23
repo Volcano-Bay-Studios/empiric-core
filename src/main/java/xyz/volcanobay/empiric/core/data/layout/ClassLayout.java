@@ -48,7 +48,14 @@ public final class ClassLayout {
         Set<String> instanceIds = new HashSet<>();
         Set<String> staticIds = new HashSet<>();
         for (Class<?> current : hierarchy) {
-            for (Field field : current.getDeclaredFields()) {
+            Field[] declared;
+            try {
+                declared = current.getDeclaredFields();
+            } catch (LinkageError | RuntimeException e) {
+                System.getLogger(ClassLayout.class.getName()).log(System.Logger.Level.WARNING, current.getName() + " has field types that can't load here, so its fields are skipped: " + e);
+                continue;
+            }
+            for (Field field : declared) {
                 Data data = field.getAnnotation(Data.class);
                 if (data == null) {
                     continue;

@@ -4,6 +4,7 @@ import xyz.volcanobay.empiric.core.data.layout.ClassLayout;
 import xyz.volcanobay.empiric.core.data.layout.LayoutCache;
 import xyz.volcanobay.empiric.core.data.spec.DeferredSpec;
 import xyz.volcanobay.empiric.core.data.spec.ObjectSpec;
+import xyz.volcanobay.empiric.core.data.spec.PolymorphicSpec;
 import xyz.volcanobay.empiric.core.data.spec.StaticSpec;
 
 import java.lang.reflect.Constructor;
@@ -33,6 +34,25 @@ public final class SpecRegistry {
     public <T> void register(Class<T> type, Spec<T> spec) {
         checkOpen();
         exact.put(type, spec);
+    }
+
+    /**
+     * The spec for values that are one of several classes of {@code base}, which the returned spec registers with an id
+     * each. Calling it again for the same base returns the same spec, so several mods can add their own classes.
+     */
+    @SuppressWarnings("unchecked")
+    public <T> PolymorphicSpec<T> polymorphic(Class<T> base) {
+        checkOpen();
+        Spec<?> existing = exact.get(base);
+        if (existing instanceof PolymorphicSpec<?> polymorphic) {
+            return (PolymorphicSpec<T>) polymorphic;
+        }
+        if (existing != null) {
+            throw new DataException(base.getName() + " already has a spec that isn't polymorphic");
+        }
+        PolymorphicSpec<T> created = new PolymorphicSpec<>(base, this);
+        exact.put(base, created);
+        return created;
     }
 
     public void register(SpecFactory factory) {

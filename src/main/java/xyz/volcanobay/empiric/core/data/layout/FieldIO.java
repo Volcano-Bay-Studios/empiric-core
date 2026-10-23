@@ -9,6 +9,7 @@ import xyz.volcanobay.empiric.core.data.Mode;
 import xyz.volcanobay.empiric.core.data.ModeResolver;
 import xyz.volcanobay.empiric.core.data.Resolution;
 import xyz.volcanobay.empiric.core.data.Slot;
+import xyz.volcanobay.empiric.core.data.Spec;
 import xyz.volcanobay.empiric.core.data.SpecRegistry;
 import xyz.volcanobay.empiric.core.data.spec.NullableSpec;
 
@@ -105,6 +106,13 @@ public abstract class FieldIO {
 
     public abstract Object get(Object owner);
 
+    /**
+     * The spec the field's value is read and written with, or null for primitives.
+     */
+    public Spec<?> spec() {
+        return null;
+    }
+
     public abstract void copy(Object from, Object to);
 
     public abstract boolean same(Object first, Object second);
@@ -136,6 +144,11 @@ public abstract class FieldIO {
         @Override
         public Object get(Object owner) {
             return getter.get(owner);
+        }
+
+        @Override
+        public Spec<?> spec() {
+            return slot.spec();
         }
 
         private void set(Object owner, Object value) {

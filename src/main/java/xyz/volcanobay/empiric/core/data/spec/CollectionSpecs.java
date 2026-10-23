@@ -3,6 +3,7 @@ package xyz.volcanobay.empiric.core.data.spec;
 import xyz.volcanobay.empiric.core.data.DataBuffer;
 import xyz.volcanobay.empiric.core.data.DataContext;
 import xyz.volcanobay.empiric.core.data.DataPrinter;
+import xyz.volcanobay.empiric.core.data.FieldDelta;
 import xyz.volcanobay.empiric.core.data.ListUpdate;
 import xyz.volcanobay.empiric.core.data.Mode;
 import xyz.volcanobay.empiric.core.data.Slot;
@@ -114,7 +115,7 @@ public final class CollectionSpecs {
         return constructor(raw);
     }
 
-    static final class CollectionSpec<E, C extends Collection<E>> implements Spec<C> {
+    static final class CollectionSpec<E, C extends Collection<E>> implements Spec<C>, DeltaSpec<C> {
 
         private final Supplier<C> factory;
         private final Slot<E> element;
@@ -154,6 +155,7 @@ public final class CollectionSpecs {
         }
 
         @Override
+        @SuppressWarnings("unchecked")
         public C update(DataBuffer buffer, C existing, DataContext context) {
             int count = buffer.takeArray();
             if (update == ListUpdate.APPEND) {
@@ -163,7 +165,8 @@ public final class CollectionSpecs {
                 buffer.endArray();
                 return existing;
             }
-            if (element.updates() && existing instanceof List<E> list) {
+            if (element.updates() && existing instanceof List<?>) {
+                List<E> list = (List<E>) existing;
                 for (int i = 0; i < count; i++) {
                     if (i < list.size()) {
                         E current = list.get(i);
@@ -231,6 +234,66 @@ public final class CollectionSpecs {
         }
 
         @Override
+        public boolean supportsDelta() {
+            return factory.get() instanceof Set;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public void writeDelta(DataBuffer buffer, C value, FieldDelta delta, DataContext context) {
+            List<E> added = new ArrayList<>();
+            List<E> removed = new ArrayList<>();
+            for (Object entry : delta.changed()) {
+                (value.contains(entry) ? added : removed).add((E) entry);
+            }
+            for (Object entry : delta.removed()) {
+                if (!value.contains(entry)) {
+                    removed.add((E) entry);
+                }
+            }
+            buffer.putBoolean(delta.replace());
+            buffer.beginArray(removed.size());
+            for (E entry : removed) {
+                buffer.element();
+                element.write(buffer, entry, context);
+            }
+            buffer.endArray();
+            buffer.beginArray(added.size());
+            for (E entry : added) {
+                buffer.element();
+                element.write(buffer, entry, context);
+            }
+            buffer.endArray();
+        }
+
+        @Override
+        public void readDelta(DataBuffer buffer, C existing, DataContext context) {
+            if (buffer.takeBoolean()) {
+                existing.clear();
+            }
+            int removed = buffer.takeArray();
+            for (int i = 0; i < removed; i++) {
+                existing.remove(readElement(buffer, null, context));
+            }
+            buffer.endArray();
+            int added = buffer.takeArray();
+            for (int i = 0; i < added; i++) {
+                existing.add(readElement(buffer, null, context));
+            }
+            buffer.endArray();
+        }
+
+        @Override
+        public Object entry(C value, Object key) {
+            return value.contains(key) ? key : null;
+        }
+
+        @Override
+        public Iterable<?> keys(C value) {
+            return value;
+        }
+
+        @Override
         public void print(C value, DataPrinter printer) {
             printer.open("[");
             for (E entry : value) {
@@ -240,7 +303,7 @@ public final class CollectionSpecs {
         }
     }
 
-    static final class MapSpec<K, V, M extends Map<K, V>> implements Spec<M> {
+    static final class MapSpec<K, V, M extends Map<K, V>> implements Spec<M>, DeltaSpec<M> {
 
         private final Supplier<M> factory;
         private final Slot<K> key;
@@ -387,6 +450,74 @@ public final class CollectionSpecs {
                 }
             }
             return true;
+        }
+
+        @Override
+        public boolean supportsDelta() {
+            return true;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public void writeDelta(DataBuffer buffer, M map, FieldDelta delta, DataContext context) {
+            List<K> upserts = new ArrayList<>();
+            List<K> removed = new ArrayList<>();
+            for (Object entry : delta.changed()) {
+                (map.containsKey(entry) ? upserts : removed).add((K) entry);
+            }
+            for (Object entry : delta.removed()) {
+                if (!map.containsKey(entry)) {
+                    removed.add((K) entry);
+                }
+            }
+            buffer.putBoolean(delta.replace());
+            buffer.beginArray(removed.size());
+            for (K entry : removed) {
+                buffer.element();
+                key.write(buffer, entry, context);
+            }
+            buffer.endArray();
+            buffer.beginArray(upserts.size());
+            for (K entry : upserts) {
+                buffer.element();
+                key.write(buffer, entry, context);
+                value.write(buffer, map.get(entry), context);
+            }
+            buffer.endArray();
+        }
+
+        @Override
+        public void readDelta(DataBuffer buffer, M existing, DataContext context) {
+            if (buffer.takeBoolean()) {
+                existing.clear();
+            }
+            int removed = buffer.takeArray();
+            for (int i = 0; i < removed; i++) {
+                buffer.takeElement();
+                existing.remove(key.read(buffer, null, context));
+            }
+            buffer.endArray();
+            int upserts = buffer.takeArray();
+            for (int i = 0; i < upserts; i++) {
+                buffer.takeElement();
+                K k = key.read(buffer, null, context);
+                V current = existing.get(k);
+                V read = value.read(buffer, current, context);
+                if (read != current) {
+                    existing.put(k, read);
+                }
+            }
+            buffer.endArray();
+        }
+
+        @Override
+        public Object entry(M map, Object key) {
+            return map.get(key);
+        }
+
+        @Override
+        public Iterable<?> keys(M map) {
+            return map.keySet();
         }
 
         @Override

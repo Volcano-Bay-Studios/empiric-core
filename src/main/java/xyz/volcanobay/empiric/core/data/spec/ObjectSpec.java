@@ -4,6 +4,7 @@ import xyz.volcanobay.empiric.core.data.DataBuffer;
 import xyz.volcanobay.empiric.core.data.DataContext;
 import xyz.volcanobay.empiric.core.data.DataException;
 import xyz.volcanobay.empiric.core.data.DataPrinter;
+import xyz.volcanobay.empiric.core.data.FieldDelta;
 import xyz.volcanobay.empiric.core.data.Mode;
 import xyz.volcanobay.empiric.core.data.Resolution;
 import xyz.volcanobay.empiric.core.data.Spec;
@@ -17,6 +18,7 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntFunction;
 import java.util.function.IntPredicate;
 
 public final class ObjectSpec<T> implements Spec<T> {
@@ -28,6 +30,9 @@ public final class ObjectSpec<T> implements Spec<T> {
     private final int[] watched;
     private final BitSet clientMutable = new BitSet();
     private final Map<String, FieldIO> byId;
+    private final int[] intervals;
+    private final boolean throttled;
+    private final DeltaSpec<Object>[] deltas;
 
     public ObjectSpec(ClassLayout layout, Resolution resolution, SpecRegistry registry) {
         this.layout = layout;
@@ -59,6 +64,40 @@ public final class ObjectSpec<T> implements Spec<T> {
         this.synced = synced.toArray(FieldIO[]::new);
         this.watched = watched.stream().mapToInt(Integer::intValue).toArray();
         this.byId = KeyedFormat.index(this.saved);
+        this.intervals = new int[this.synced.length];
+        boolean throttled = false;
+        for (int i = 0; i < intervals.length; i++) {
+            intervals[i] = this.synced[i].layout().interval();
+            throttled |= intervals[i] > 0;
+        }
+        this.throttled = throttled;
+        this.deltas = deltas(this.synced);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static DeltaSpec<Object>[] deltas(FieldIO[] synced) {
+        DeltaSpec<Object>[] deltas = new DeltaSpec[synced.length];
+        for (int i = 0; i < synced.length; i++) {
+            if (!synced[i].layout().delta()) {
+                continue;
+            }
+            if (!(synced[i].spec() instanceof DeltaSpec<?> spec) || !spec.supportsDelta()) {
+                throw new DataException(synced[i].layout().describe() + " is a delta field but isn't a map or set");
+            }
+            deltas[i] = (DeltaSpec<Object>) spec;
+        }
+        return deltas;
+    }
+
+    /**
+     * Whether the synced field at {@code index} is a {@code @Data(delta = true)} map or set.
+     */
+    public boolean isDelta(int index) {
+        return deltas[index] != null;
+    }
+
+    public DeltaSpec<Object> delta(int index) {
+        return deltas[index];
     }
 
     public ClassLayout layout() {
@@ -76,6 +115,20 @@ public final class ObjectSpec<T> implements Spec<T> {
             }
         }
         throw new DataException(layout.type().getName() + " has no synced field \"" + id + "\"");
+    }
+
+    /**
+     * Whether any synced field has a {@link xyz.volcanobay.empiric.core.data.Data#interval()}.
+     */
+    public boolean throttles() {
+        return throttled;
+    }
+
+    /**
+     * The fewest ticks between sends of the synced field at {@code index}.
+     */
+    public int interval(int index) {
+        return intervals[index];
     }
 
     public BitSet clientMutable() {
@@ -168,10 +221,28 @@ public final class ObjectSpec<T> implements Spec<T> {
     }
 
     public void writeDirty(DataBuffer buffer, T value, BitSet dirty, DataContext context) {
+        writeDirty(buffer, value, dirty, index -> null, context);
+    }
+
+    /**
+     * Writes the fields in {@code dirty}. A delta field is written as the entries {@code deltas} gives for it, or whole
+     * if that returns null.
+     */
+    public void writeDirty(DataBuffer buffer, T value, BitSet dirty, IntFunction<FieldDelta> deltas, DataContext context) {
         buffer.putVarInt(dirty.cardinality());
         for (int i = dirty.nextSetBit(0); i >= 0; i = dirty.nextSetBit(i + 1)) {
             buffer.putVarInt(i);
-            synced[i].write(buffer, value, context);
+            if (this.deltas[i] == null) {
+                synced[i].write(buffer, value, context);
+                continue;
+            }
+            FieldDelta delta = deltas.apply(i);
+            buffer.putBoolean(delta != null);
+            if (delta == null) {
+                synced[i].write(buffer, value, context);
+            } else {
+                this.deltas[i].writeDelta(buffer, synced[i].get(value), delta, context);
+            }
         }
     }
 
@@ -183,7 +254,15 @@ public final class ObjectSpec<T> implements Spec<T> {
             if (index < 0 || index >= synced.length) {
                 throw new DataException(layout.type().getName() + " has no synced field at " + index);
             }
-            synced[index].read(buffer, value, context);
+            if (deltas[index] != null && buffer.takeBoolean()) {
+                Object existing = synced[index].get(value);
+                if (existing == null) {
+                    throw new DataException(synced[index].layout().describe() + " got a delta but is null");
+                }
+                deltas[index].readDelta(buffer, existing, context);
+            } else {
+                synced[index].read(buffer, value, context);
+            }
             read.set(index);
         }
         return read;

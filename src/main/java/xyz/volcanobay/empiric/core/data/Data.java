@@ -37,6 +37,20 @@ public @interface Data {
      */
     boolean clientMutable() default false;
 
+    /**
+     * For a {@code Map} or {@code Set} field. On true, syncs only the entries marked with {@code Module.markDirty(field, key)} and
+     * {@code Module.markRemoved(field, key)} instead of the whole field, and lets a module track the entries one by one.
+     * Marking the field itself still sends all of it. It can't be combined with {@link #watch()},
+     * {@link #clientMutable()} or {@link #optional()}.
+     */
+    boolean delta() default false;
+
+    /**
+     * The fewest ticks between sends of this field. A change made sooner waits until the interval is up, and only the
+     * latest value is sent, so use it for fast changing data that can arrive late. 0 sends on the tick it changed.
+     */
+    int interval() default 0;
+
     Mode mode() default Mode.INHERIT;
 
     int depth() default -1;

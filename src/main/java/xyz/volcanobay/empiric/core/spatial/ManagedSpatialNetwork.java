@@ -87,10 +87,13 @@ public abstract class ManagedSpatialNetwork {
 
 
         Set<Integer> existingIds = new HashSet<>();
+        boolean grew = false;
         for (SpatialPos p : members) {
             int id = cache.get(p.x(), p.y(), p.z());
             if (id != -1) {
                 existingIds.add(findRoot(id));
+            } else {
+                grew = true;
             }
         }
         int finalId;
@@ -114,6 +117,10 @@ public abstract class ManagedSpatialNetwork {
             if (finalId != -2) {
                 networkPositions.computeIfAbsent(finalId, k -> new HashSet<>()).add(p); // If it is the default network, we don't want to waste memory filling up these maps.
             }
+        }
+        // if (grew && !existingIds.isEmpty())
+        if (grew && !existingIds.isEmpty() && finalId != -2) {
+            update(finalId);
         }
         return finalId;
     }

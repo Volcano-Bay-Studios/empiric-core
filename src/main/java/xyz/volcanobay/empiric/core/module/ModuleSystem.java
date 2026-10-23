@@ -13,6 +13,9 @@ import xyz.volcanobay.empiric.core.data.SpecRegistry;
 import xyz.volcanobay.empiric.core.data.layout.KeyedFormat;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import xyz.volcanobay.empiric.core.data.spec.ObjectSpec;
+
 import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashMap;
@@ -147,6 +150,7 @@ public final class ModuleSystem {
         type.synced = SyncBehavior.class.isAssignableFrom(type.moduleClass());
         type.spec = specs.objectSpec(type.moduleClass());
         type.statics = specs.staticSpec(type.moduleClass());
+        type.resolveTracking();
         types.add(type);
         for (SideState side : sides) {
             side.addType();
@@ -653,12 +657,68 @@ public final class ModuleSystem {
         if (module.dirty == null) {
             module.dirty = new BitSet();
         }
+        ObjectSpec<Object> spec = module.spec();
         if (index < 0) {
-            module.dirty.set(0, module.spec().synced().length);
+            module.dirty.set(0, spec.synced().length);
+            for (int i = 0; i < spec.synced().length; i++) {
+                if (spec.isDelta(i)) {
+                    pending(module, i).full = true;
+                }
+            }
         } else {
             module.dirty.set(index);
+            if (spec.isDelta(index)) {
+                pending(module, index).full = true;
+            }
         }
         queue(state, module);
+    }
+
+    void markKey(Module<?> module, int index, Object key, boolean removed) {
+        if (!module.spec().isDelta(index)) {
+            throw new DataException(module.spec().synced()[index].layout().describe() + " isn't a @Data(delta = true) field");
+        }
+        if (!module.attached || !module.type.synced) {
+            return;
+        }
+        SideState state = state(module.attachment.side());
+        if (state == null) {
+            return;
+        }
+        Module.Pending pending = pending(module, index);
+        if (!pending.full) {
+            if (removed) {
+                pending.changed.remove(key);
+                pending.removed.add(key);
+            } else {
+                pending.removed.remove(key);
+                pending.changed.add(key);
+            }
+        }
+        if (module.dirty == null) {
+            module.dirty = new BitSet();
+        }
+        module.dirty.set(index);
+        queue(state, module);
+    }
+
+    private static Module.Pending pending(Module<?> module, int index) {
+        if (module.pending == null) {
+            module.pending = new Module.Pending[module.spec().synced().length];
+        }
+        if (module.pending[index] == null) {
+            module.pending[index] = new Module.Pending();
+        }
+        return module.pending[index];
+    }
+
+    private static void clearPending(Module<?> module, BitSet fields) {
+        if (module.pending == null) {
+            return;
+        }
+        for (int i = fields.nextSetBit(0); i >= 0; i = fields.nextSetBit(i + 1)) {
+            module.pending[i] = null;
+        }
     }
 
     private void queue(SideState state, Module<?> module) {
@@ -668,12 +728,21 @@ public final class ModuleSystem {
         }
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     public void flushDirty(Side side, DirtyConsumer consumer) {
+        flushDirty(side, module -> true, consumer);
+    }
+
+    /**
+     * Like {@link #flushDirty(Side, DirtyConsumer)}, but only for the modules {@code only} accepts. The others keep their
+     * dirty fields for the next flush.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public void flushDirty(Side side, Predicate<Module<?>> only, DirtyConsumer consumer) {
         SideState state = state(side);
         if (state == null) {
             return;
         }
+        long now = ++state.tick;
         state.watchers.forEach((Module module) -> {
             if (module.dirty == null) {
                 module.dirty = new BitSet();
@@ -689,14 +758,54 @@ public final class ModuleSystem {
         state.dirty.clear();
         for (Module<?> module : pending) {
             module.queued = false;
+            if (!only.test(module)) {
+                queue(state, module);
+                continue;
+            }
             if (side == Side.CLIENT) {
                 module.dirty.and(module.spec().clientMutable());
             }
-            if (module.attached && !module.dirty.isEmpty()) {
-                consumer.accept(module, module.dirty);
+            if (!module.attached) {
+                module.dirty.clear();
+                module.pending = null;
+                continue;
             }
-            module.dirty.clear();
+            BitSet due = due(module, now);
+            if (!due.isEmpty()) {
+                consumer.accept(module, due);
+                clearPending(module, due);
+            }
+            module.dirty.andNot(due);
+            if (!module.dirty.isEmpty()) {
+                queue(state, module);
+            }
         }
+    }
+
+    /**
+     * The dirty fields of the module that are past their send interval, which are marked as sent now. Fields that aren't
+     * stay dirty for a later flush.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static BitSet due(Module<?> module, long now) {
+        ObjectSpec spec = module.spec();
+        if (!spec.throttles()) {
+            return module.dirty;
+        }
+        if (module.sentAt == null) {
+            module.sentAt = new long[spec.synced().length];
+            Arrays.fill(module.sentAt, Long.MIN_VALUE / 2);
+        }
+        BitSet due = (BitSet) module.dirty.clone();
+        for (int i = due.nextSetBit(0); i >= 0; i = due.nextSetBit(i + 1)) {
+            int interval = spec.interval(i);
+            if (interval > 0 && now - module.sentAt[i] < interval) {
+                due.clear(i);
+            } else {
+                module.sentAt[i] = now;
+            }
+        }
+        return due;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -708,6 +817,21 @@ public final class ModuleSystem {
             module.dirty.andNot(fields);
         }
         fire(module, ModuleEvents.SYNCED, new SyncedFields(module.spec(), fields));
+    }
+
+    /**
+     * Resets the synced fields among {@code fields} to what a new module of the type starts with, as when a server stops
+     * tracking them for this client. Fires {@link ModuleEvents#SYNCED} for them like a received sync.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public void resetFields(Module<?> module, BitSet fields) {
+        Module fresh = module.type.create();
+        fresh.init(module.attachment, module.type, behaviors.size());
+        ObjectSpec spec = module.spec();
+        for (int i = fields.nextSetBit(0); i >= 0; i = fields.nextSetBit(i + 1)) {
+            spec.synced()[i].copy(fresh.data(), module.data());
+        }
+        acceptRemote(module, fields);
     }
 
     public void writeLocator(DataBuffer buffer, Module<?> module, DataContext context) {
@@ -749,6 +873,7 @@ public final class ModuleSystem {
         private final List<ModuleIndex> types = new ArrayList<>();
         private final ModuleIndex watchers = new ModuleIndex(1);
         private final List<Module<?>> dirty = new ArrayList<>();
+        private long tick;
         private final Set<ModuleType<?, ?>> pending = new LinkedHashSet<>();
         private final Map<String, Set<ModuleHolder>> dormantHolders = new HashMap<>();
 

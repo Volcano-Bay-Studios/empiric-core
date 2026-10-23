@@ -37,6 +37,12 @@ public final class FieldLayout {
         if (data.clientMutable() && !data.sync()) {
             throw new DataException(describe() + " is client mutable but doesn't sync");
         }
+        if (data.delta() && (isStatic || !data.sync() || data.watch() || data.clientMutable() || data.optional())) {
+            throw new DataException(describe() + " is a delta field, which has to sync, can't be static, watched, client mutable or optional (mark its entries with Module.markDirty(field, key) instead)");
+        }
+        if (data.interval() < 0 || data.interval() > 0 && !data.sync()) {
+            throw new DataException(describe() + " has a sync interval of " + data.interval() + (data.sync() ? ", it can't be negative" : " but doesn't sync"));
+        }
         if (isFinal && field.getType().isPrimitive()) {
             throw new DataException(describe() + " is a final primitive and can't be read into");
         }
@@ -121,6 +127,14 @@ public final class FieldLayout {
 
     public boolean clientMutable() {
         return data.clientMutable();
+    }
+
+    public boolean delta() {
+        return data.delta();
+    }
+
+    public int interval() {
+        return data.interval();
     }
 
     public boolean optional() {
