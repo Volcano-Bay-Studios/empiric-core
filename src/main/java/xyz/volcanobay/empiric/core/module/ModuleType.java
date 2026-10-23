@@ -136,6 +136,21 @@ public class ModuleType<M extends Module<A>, A extends Attachment> {
         return spec;
     }
 
+    /**
+     * The object whose {@code @Data} fields hold this module's data. Defaults to the module itself.
+     */
+    public Object data(M module) {
+        return module;
+    }
+
+    /**
+     * The spec that reads and writes {@link #data(Module)} of this module.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ObjectSpec<Object> spec(M module) {
+        return (ObjectSpec) spec;
+    }
+
     public StaticSpec statics() {
         return statics;
     }

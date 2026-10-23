@@ -3,6 +3,7 @@ package xyz.volcanobay.empiric.core.module;
 import xyz.volcanobay.empiric.core.EmpiricCore;
 import xyz.volcanobay.empiric.core.attachment.Attachment;
 import xyz.volcanobay.empiric.core.attachment.ModuleAttachment;
+import xyz.volcanobay.empiric.core.data.spec.ObjectSpec;
 
 import java.util.Arrays;
 import java.util.BitSet;
@@ -61,11 +62,21 @@ public abstract class Module<A extends Attachment> {
     }
 
     public final void markDirty(String field) {
-        EmpiricCore.modules().markDirty(this, type.spec().syncIndex(field));
+        EmpiricCore.modules().markDirty(this, spec().syncIndex(field));
     }
 
     public final boolean isDirty(String field) {
-        return dirty != null && dirty.get(type.spec().syncIndex(field));
+        return dirty != null && dirty.get(spec().syncIndex(field));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public final ObjectSpec<Object> spec() {
+        return ((ModuleType) type).spec(this);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public final Object data() {
+        return ((ModuleType) type).data(this);
     }
 
     protected void onAttach() {

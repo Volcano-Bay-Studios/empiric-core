@@ -346,6 +346,7 @@ public final class ModuleSystem {
             return module;
         }
         M module = type.create();
+        module.init(attachment, type, behaviors.size());
         install(attachment, type, module);
         module.onAttach();
         fire(module, ModuleEvents.ATTACHED, null);
@@ -417,7 +418,6 @@ public final class ModuleSystem {
     }
 
     private <M extends Module<A>, A extends Attachment> void install(A attachment, ModuleType<M, A> type, M module) {
-        module.init(attachment, type, behaviors.size());
         attachment.modules().set(type.index, module);
         module.attached = true;
         SideState state = state(attachment.side());
@@ -428,8 +428,8 @@ public final class ModuleSystem {
         for (BehaviorKey<?> behavior : type.behaviors) {
             state.behaviors.get(behavior.id()).add(module);
         }
-        if (type.watches()) {
-            module.snapshot = type.spec.snapshot(module);
+        if (type.synced && module.spec().watches()) {
+            module.snapshot = module.spec().snapshot(module.data());
             state.watchers.add(module);
         }
     }
@@ -520,7 +520,7 @@ public final class ModuleSystem {
 
     @SuppressWarnings("unchecked")
     private <M extends Module<?>> void writeModule(DataBuffer buffer, M module, DataContext context) {
-        ((ModuleType<M, ?>) (ModuleType<?, ?>) module.type).spec.write(buffer, module, context);
+        module.spec().write(buffer, module.data(), context);
         ModuleAttachment children = module.childrenIfPresent();
         if (children == null || children.modules().isEmpty()) {
             buffer.putVarInt(0);
@@ -563,7 +563,8 @@ public final class ModuleSystem {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Module readModule(Attachment attachment, ModuleType type, DataBuffer buffer, DataContext context) {
         Module module = type.create();
-        type.spec.update(buffer, module, context);
+        module.init(attachment, type, behaviors.size());
+        module.spec().update(buffer, module.data(), context);
         install(attachment, type, module);
         load(module.children(), buffer, context);
         module.onLoad();
@@ -653,7 +654,7 @@ public final class ModuleSystem {
             module.dirty = new BitSet();
         }
         if (index < 0) {
-            module.dirty.set(0, module.type.spec.synced().length);
+            module.dirty.set(0, module.spec().synced().length);
         } else {
             module.dirty.set(index);
         }
@@ -677,7 +678,7 @@ public final class ModuleSystem {
             if (module.dirty == null) {
                 module.dirty = new BitSet();
             }
-            if (((ModuleType) module.type).spec.detectChanges(module, module.snapshot, module.dirty)) {
+            if (module.spec().detectChanges(module.data(), module.snapshot, module.dirty)) {
                 queue(state, module);
             }
         });
@@ -689,7 +690,7 @@ public final class ModuleSystem {
         for (Module<?> module : pending) {
             module.queued = false;
             if (side == Side.CLIENT) {
-                module.dirty.and(module.type.spec.clientMutable());
+                module.dirty.and(module.spec().clientMutable());
             }
             if (module.attached && !module.dirty.isEmpty()) {
                 consumer.accept(module, module.dirty);
@@ -701,12 +702,12 @@ public final class ModuleSystem {
     @SuppressWarnings({"unchecked", "rawtypes"})
     public void acceptRemote(Module<?> module, BitSet fields) {
         if (module.snapshot != null) {
-            ((ModuleType) module.type).spec.refreshSnapshot(module, module.snapshot, fields);
+            module.spec().refreshSnapshot(module.data(), module.snapshot, fields);
         }
         if (module.dirty != null) {
             module.dirty.andNot(fields);
         }
-        fire(module, ModuleEvents.SYNCED, new SyncedFields(module.type.spec, fields));
+        fire(module, ModuleEvents.SYNCED, new SyncedFields(module.spec(), fields));
     }
 
     public void writeLocator(DataBuffer buffer, Module<?> module, DataContext context) {
