@@ -12,11 +12,22 @@ import java.util.function.Function;
  */
 public final class GraphNodeType {
 
+    public static final String ANCHOR_ID = "empiric:anchor";
+    public static final GraphNodeType ANCHOR = GraphNodeType.of(ANCHOR_ID)
+            .title("Anchor")
+            .category("Anchor")
+            .description("A point to organize links. Drag a link onto empty space to make one, drag it to move it, shift-drag from it to continue a link")
+            .input("in", GraphPort.ANY)
+            .output("out", GraphPort.ANY)
+            .anchor();
+
     private final String id;
+    private boolean anchor;
     private String title;
     private String category = "Nodes";
     private String color = "accent";
     private String description = "";
+    private String icon = "";
     private int width = 80;
     private final List<GraphPort> inputs = new ArrayList<>();
     private final List<GraphPort> outputs = new ArrayList<>();
@@ -44,6 +55,18 @@ public final class GraphNodeType {
         return this;
     }
 
+    /**
+     * A short symbol drawn in the header and picker, instead of the category's.
+     */
+    public GraphNodeType icon(String icon) {
+        this.icon = icon;
+        return this;
+    }
+
+    public String icon() {
+        return icon;
+    }
+
     public String description() {
         return description;
     }
@@ -61,6 +84,19 @@ public final class GraphNodeType {
         return this;
     }
 
+    /**
+     * Marks the type as a bare link point: no header or body, one input and one output at the same spot, and kept out
+     * of pickers.
+     */
+    GraphNodeType anchor() {
+        this.anchor = true;
+        return this;
+    }
+
+    public boolean isAnchor() {
+        return anchor;
+    }
+
     public GraphNodeType width(int width) {
         this.width = width;
         return this;
@@ -69,6 +105,24 @@ public final class GraphNodeType {
     public GraphNodeType input(String id, String kind) {
         inputs.add(GraphPort.of(id, kind));
         return this;
+    }
+
+    /**
+     * An input that exists only while the node's {@code toggle} setting is on.
+     */
+    public GraphNodeType optionalInput(String id, String label, String kind, String toggle) {
+        inputs.add(GraphPort.optional(id, label, kind, toggle));
+        return this;
+    }
+
+    public List<GraphPort> inputs(GraphNode node) {
+        List<GraphPort> shown = new ArrayList<>();
+        for (GraphPort port : inputs) {
+            if (port.shownOn(node)) {
+                shown.add(port);
+            }
+        }
+        return shown;
     }
 
     public GraphNodeType output(String id, String kind) {

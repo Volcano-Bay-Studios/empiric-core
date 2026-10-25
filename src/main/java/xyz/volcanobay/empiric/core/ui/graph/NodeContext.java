@@ -90,6 +90,11 @@ public final class NodeContext {
         GraphNode current = node();
         if (current != null && view.canEdit()) {
             current.set(key, value);
+            GraphNodeType type = view.palette().type(current.type);
+            if (type != null) {
+                view.graph().links.removeIf(link -> link.to == node && type.input(link.input) != null && !type.input(link.input).shownOn(current));
+            }
+            view.requestLayout();
             view.commit();
         }
     }

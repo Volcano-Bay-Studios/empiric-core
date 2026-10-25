@@ -1,14 +1,15 @@
 package xyz.volcanobay.empiric.core.ui.graph;
 
 import xyz.volcanobay.empiric.core.ui.ContextEntry;
+import xyz.volcanobay.empiric.core.ui.Keys;
 import xyz.volcanobay.empiric.core.ui.UiCanvas;
 import xyz.volcanobay.empiric.core.ui.UiPoint;
 import xyz.volcanobay.empiric.core.ui.widget.ColorPicker;
 import xyz.volcanobay.empiric.core.ui.Widget;
 
 /**
- * One link of a {@link NodeGraphView}, drawn as a curve between its ports behind the nodes. Its hit area is the curve
- * itself, so it can be hovered and right clicked to delete.
+ * One link of a {@link NodeGraphView}, drawn along the route its {@link GraphLinkStyle} gives between its ports, behind
+ * the nodes. Its hit area is the route itself, so it can be hovered and right clicked to delete.
  */
 public class LinkWidget extends Widget {
 
@@ -18,16 +19,21 @@ public class LinkWidget extends Widget {
 
     private final NodeGraphView view;
     private final GraphLink link;
-    private float startX;
-    private float startY;
-    private float endX;
-    private float endY;
+    private float[] points = new float[0];
     private String kind = GraphPort.ANY;
+    private long lastDown;
+    private float lastX;
+    private float lastY;
 
     LinkWidget(NodeGraphView view, GraphLink link) {
         this.view = view;
         this.link = link;
-        layer(-1);
+        layer(-2);
+        contextEntry(ContextEntry.of("Add anchor", () -> {
+            if (view.canEdit()) {
+                view.splitLink(link, x() + lastX, y() + lastY);
+            }
+        }));
         contextEntry(ContextEntry.of("Delete link", () -> {
             if (view.canEdit()) {
                 view.removeLink(link);
@@ -44,31 +50,55 @@ public class LinkWidget extends Widget {
         NodeWidget to = view.nodeWidget(link.to);
         GraphPort output = from == null ? null : from.type().output(link.output);
         GraphPort input = to == null ? null : to.type().input(link.input);
-        if (output == null || input == null) {
+        if (output == null || input == null || !to.shows(input)) {
             setBounds(0, 0, 0, 0);
             return;
         }
         kind = output.kind();
         UiPoint start = from.portPoint(output, false);
         UiPoint end = to.portPoint(input, true);
+        float[] route = view.linkStyle().route((float) start.x(), (float) start.y(), (float) end.x(), (float) end.y(), view.grid(), view.obstacles());
         float minX = Float.MAX_VALUE;
         float minY = Float.MAX_VALUE;
         float maxX = -Float.MAX_VALUE;
         float maxY = -Float.MAX_VALUE;
-        for (int i = 0; i <= SEGMENTS; i++) {
-            float[] point = point((float) start.x(), (float) start.y(), (float) end.x(), (float) end.y(), i / (float) SEGMENTS);
-            minX = Math.min(minX, point[0]);
-            minY = Math.min(minY, point[1]);
-            maxX = Math.max(maxX, point[0]);
-            maxY = Math.max(maxY, point[1]);
+        for (int i = 0; i < route.length; i += 2) {
+            minX = Math.min(minX, route[i]);
+            minY = Math.min(minY, route[i + 1]);
+            maxX = Math.max(maxX, route[i]);
+            maxY = Math.max(maxY, route[i + 1]);
         }
         int left = (int) Math.floor(minX - MARGIN);
         int top = (int) Math.floor(minY - MARGIN);
-        startX = (float) start.x() - left;
-        startY = (float) start.y() - top;
-        endX = (float) end.x() - left;
-        endY = (float) end.y() - top;
+        points = new float[route.length];
+        for (int i = 0; i < route.length; i += 2) {
+            points[i] = route[i] - left;
+            points[i + 1] = route[i + 1] - top;
+        }
         setBounds(left, top, (int) Math.ceil(maxX + MARGIN) - left, (int) Math.ceil(maxY + MARGIN) - top);
+    }
+
+    @Override
+    protected boolean pointerDown(double x, double y, int button) {
+        long now = System.currentTimeMillis();
+        boolean twice = button == Keys.LEFT_BUTTON && now - lastDown < 350 && Math.abs(x - lastX) < 4 && Math.abs(y - lastY) < 4;
+        lastDown = now;
+        lastX = (float) x;
+        lastY = (float) y;
+        if (twice && view.canEdit()) {
+            lastDown = 0;
+            view.splitLink(link, this.x() + lastX, this.y() + lastY);
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    protected void tick() {
+        int want = isHovered() ? -1 : -2;
+        if (layer() != want) {
+            layer(want);
+        }
     }
 
     @Override
@@ -81,50 +111,40 @@ public class LinkWidget extends Widget {
         if (!super.contains(x, y)) {
             return false;
         }
-        float[] previous = point(startX, startY, endX, endY, 0);
-        for (int i = 1; i <= SEGMENTS; i++) {
-            float[] next = point(startX, startY, endX, endY, i / (float) SEGMENTS);
-            if (distance(x, y, previous, next) <= REACH) {
+        for (int i = 2; i < points.length; i += 2) {
+            if (distance(x, y, points[i - 2], points[i - 1], points[i], points[i + 1]) <= REACH) {
                 return true;
             }
-            previous = next;
         }
         return false;
     }
 
-    private static double distance(double x, double y, float[] a, float[] b) {
-        double dx = b[0] - a[0];
-        double dy = b[1] - a[1];
+    private static double distance(double x, double y, float ax, float ay, float bx, float by) {
+        double dx = bx - ax;
+        double dy = by - ay;
         double length = dx * dx + dy * dy;
-        double t = length == 0 ? 0 : Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / length));
-        double px = a[0] + t * dx - x;
-        double py = a[1] + t * dy - y;
+        double t = length == 0 ? 0 : Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / length));
+        double px = ax + t * dx - x;
+        double py = ay + t * dy - y;
         return Math.sqrt(px * px + py * py);
     }
 
     @Override
     protected void draw(UiCanvas canvas, float partialTick) {
-        curve(canvas, startX, startY, endX, endY, isHovered() ? 2.5f : 1.5f, kindColor(kind));
+        GraphLinkStyle style = view.linkStyle();
+        style.draw(canvas, points, style.color(kind, isHovered(), theme()), isHovered());
     }
 
-    /**
-     * Draws a link-shaped curve that leaves the output to the right and enters the input from the left.
-     */
-    public static void curve(UiCanvas canvas, float x0, float y0, float x1, float y1, float thickness, int color) {
-        float[] previous = point(x0, y0, x1, y1, 0);
-        for (int i = 1; i <= SEGMENTS; i++) {
-            float[] next = point(x0, y0, x1, y1, i / (float) SEGMENTS);
-            canvas.line(previous[0], previous[1], next[0], next[1], thickness, color);
-            previous = next;
-        }
-    }
-
-    private static float[] point(float x0, float y0, float x1, float y1, float t) {
+    static float[] bezier(float x0, float y0, float x1, float y1) {
+        float[] route = new float[(SEGMENTS + 1) * 2];
         float reach = Math.max(24, Math.abs(x1 - x0) * 0.5f);
-        float u = 1 - t;
-        float x = u * u * u * x0 + 3 * u * u * t * (x0 + reach) + 3 * u * t * t * (x1 - reach) + t * t * t * x1;
-        float y = u * u * u * y0 + 3 * u * u * t * y0 + 3 * u * t * t * y1 + t * t * t * y1;
-        return new float[]{x, y};
+        for (int i = 0; i <= SEGMENTS; i++) {
+            float t = i / (float) SEGMENTS;
+            float u = 1 - t;
+            route[i * 2] = u * u * u * x0 + 3 * u * u * t * (x0 + reach) + 3 * u * t * t * (x1 - reach) + t * t * t * x1;
+            route[i * 2 + 1] = u * u * u * y0 + 3 * u * u * t * y0 + 3 * u * t * t * y1 + t * t * t * y1;
+        }
+        return route;
     }
 
     /**

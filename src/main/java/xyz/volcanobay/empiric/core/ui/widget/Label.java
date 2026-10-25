@@ -6,7 +6,7 @@ import xyz.volcanobay.empiric.core.ui.layout.Align;
 import java.util.List;
 
 /**
- * Text. Bound to a non-text field, it shows the field's value read-only. With {@link #wrap}, it wraps to its fixed width.
+ * Text. Bound to a non-text field, it shows the field's value read-only. With {@link #wrap}, it wraps to its fixed width, or to the width its layout gives it.
  */
 public class Label extends ValueWidget<String> {
 
@@ -14,6 +14,7 @@ public class Label extends ValueWidget<String> {
     private Align align = Align.START;
     private boolean shadow;
     private boolean wrap;
+    private int laidWidth;
 
     public Label() {
         this("");
@@ -48,8 +49,23 @@ public class Label extends ValueWidget<String> {
         return value() == null ? "" : value();
     }
 
+    private int wrapWidth() {
+        if (!wrap) {
+            return 0;
+        }
+        return preferredWidth().fixed() ? (int) preferredWidth().value() : laidWidth;
+    }
+
     private List<String> lines(int width) {
-        return wrap && preferredWidth().fixed() ? font().wrap(text(), width) : List.of(text());
+        return wrap && width > 0 ? font().wrap(text(), width) : List.of(text());
+    }
+
+    @Override
+    protected void onLayout() {
+        if (wrap && !preferredWidth().fixed() && width() != laidWidth) {
+            laidWidth = width();
+            requestLayout();
+        }
     }
 
     @Override
@@ -58,7 +74,7 @@ public class Label extends ValueWidget<String> {
             return 0;
         }
         int max = 0;
-        for (String line : lines((int) preferredWidth().value())) {
+        for (String line : lines(wrapWidth())) {
             max = Math.max(max, font().width(line));
         }
         return max;
@@ -66,7 +82,7 @@ public class Label extends ValueWidget<String> {
 
     @Override
     protected int contentHeight() {
-        return root() == null ? 0 : lines((int) preferredWidth().value()).size() * font().lineHeight();
+        return root() == null ? 0 : lines(wrapWidth()).size() * font().lineHeight();
     }
 
     @Override
@@ -80,7 +96,7 @@ public class Label extends ValueWidget<String> {
         int lineHeight = font().lineHeight();
         int y = 0;
         int textColor = color(isEnabled() ? color : "text_dim");
-        for (String line : lines(width())) {
+        for (String line : lines(wrap ? width() : 0)) {
             int x = switch (align) {
                 case CENTER -> (width() - font().width(line)) / 2;
                 case END -> width() - font().width(line);

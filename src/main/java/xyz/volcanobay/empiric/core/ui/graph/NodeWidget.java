@@ -17,9 +17,9 @@ import java.util.List;
  */
 public class NodeWidget extends Widget {
 
-    static final int TITLE = 12;
-    static final int ROW = 11;
-    static final int PAD = 4;
+    private static final int TITLE = 12;
+    private static final int ROW = 11;
+    public static final int PAD = 4;
     private static final float PORT = 3;
     private static final float PORT_REACH = 5;
 
@@ -30,10 +30,13 @@ public class NodeWidget extends Widget {
     private final GraphNodeType type;
     private final int id;
     private final Widget body;
+    private int shownRows = -1;
     private boolean moving;
     private boolean linking;
     private float dragX;
     private float dragY;
+    private float validX;
+    private float validY;
     private float placedX = Float.NaN;
     private float placedY = Float.NaN;
 
@@ -50,6 +53,7 @@ public class NodeWidget extends Widget {
         contextEntry(ContextEntry.of("Disconnect", () -> {
             if (view.canEdit()) {
                 view.graph().links.removeIf(link -> link.from == id || link.to == id);
+                view.pruneAnchors();
                 view.commit();
             }
         }));
@@ -76,55 +80,153 @@ public class NodeWidget extends Widget {
         return !moving && (node.x != placedX || node.y != placedY);
     }
 
+    private void settle() {
+        if (type.isAnchor()) {
+            validX = view.snap(dragX);
+            validY = view.snap(dragY);
+            return;
+        }
+        float[] spot = view.freeSpot(this, dragX, dragY, measuredWidth(), measuredHeight());
+        validX = spot[0];
+        validY = spot[1];
+    }
+
     void place() {
         GraphNode node = node();
-        float x = moving ? dragX : node == null ? placedX : node.x;
-        float y = moving ? dragY : node == null ? placedY : node.y;
+        if (moving) {
+            settle();
+        } else if (node != null && Float.isNaN(placedX) && !type.isAnchor() && measuredWidth() > 0 && view.overlaps(this, node.x, node.y, measuredWidth(), measuredHeight())) {
+            float[] spot = view.freeSpot(this, node.x, node.y, measuredWidth(), measuredHeight());
+            node.x = spot[0];
+            node.y = spot[1];
+            placedX = spot[0];
+            placedY = spot[1];
+            if (view.canEdit()) {
+                view.commit();
+            }
+        }
+        float x = moving ? validX : node == null ? placedX : node.x;
+        float y = moving ? validY : node == null ? placedY : node.y;
         if (!moving) {
             placedX = x;
             placedY = y;
         }
+        if (type.isAnchor()) {
+            int size = view.grid();
+            setBounds(Math.round(x) - size / 2, Math.round(y) - size / 2, size, size);
+            return;
+        }
         setBounds(Math.round(x), Math.round(y), measuredWidth(), measuredHeight());
     }
 
+    private int up(int value) {
+        int grid = view.grid();
+        return (value + grid - 1) / grid * grid;
+    }
+
+    public NodeGraphView view() {
+        return view;
+    }
+
+    public int titleHeight() {
+        return up(TITLE);
+    }
+
+    public int rowHeight() {
+        return up(ROW);
+    }
+
+    /**
+     * Where the port in a row sits, measured from the node's top, on a grid line.
+     */
+    public int portY(int index) {
+        int grid = view.grid();
+        return titleHeight() + index * rowHeight() + Math.max(grid, rowHeight() / 2 / grid * grid);
+    }
+
+    public boolean selected() {
+        return view.isSelected(id);
+    }
+
+    public String icon() {
+        return type.icon().isEmpty() ? view.palette().categoryIcon(type.category()) : type.icon();
+    }
+
+    public List<GraphPort> inputs() {
+        return type.inputs(node());
+    }
+
+    boolean shows(GraphPort port) {
+        return port.shownOn(node());
+    }
+
+    @Override
+    protected void tick() {
+        int now = rows();
+        if (now != shownRows) {
+            shownRows = now;
+            requestLayout();
+        }
+    }
+
     private int rows() {
-        return Math.max(type.inputs().size(), type.outputs().size());
+        return Math.max(inputs().size(), type.outputs().size());
     }
 
     private int bodyTop() {
-        return TITLE + rows() * ROW + PAD / 2;
+        return up(titleHeight() + rows() * rowHeight() + PAD / 2);
     }
 
     @Override
     protected int contentWidth() {
-        return Math.max(type.width(), body == null ? 0 : body.measuredWidth() + PAD * 2);
+        if (type.isAnchor()) {
+            return view.grid();
+        }
+        return up(Math.max(type.width(), body == null ? 0 : body.measuredWidth() + PAD * 2));
     }
 
     @Override
     protected int contentHeight() {
-        return bodyTop() + (body == null ? 0 : body.measuredHeight() + PAD) + PAD / 2;
+        if (type.isAnchor()) {
+            return view.grid();
+        }
+        return up(bodyTop() + (body == null ? 0 : body.measuredHeight() + PAD) + PAD / 2);
     }
 
     /**
      * Where a port's link attaches, in graph space.
      */
     public UiPoint portPoint(GraphPort port, boolean input) {
-        List<GraphPort> ports = input ? type.inputs() : type.outputs();
+        if (type.isAnchor()) {
+            return new UiPoint(x() + width() / 2.0, y() + height() / 2.0);
+        }
+        List<GraphPort> ports = input ? inputs() : type.outputs();
         int index = Math.max(0, ports.indexOf(port));
-        return new UiPoint(x() + (input ? 0 : width()), y() + TITLE + index * ROW + ROW / 2.0 + 1);
+        return new UiPoint(x() + (input ? 0 : width()), y() + portY(index));
     }
 
     /**
      * The port near a point in this widget's coordinates, or null.
      */
     public PortHit portAt(double x, double y) {
-        PortHit hit = portAt(type.inputs(), true, 0, x, y);
+        if (type.isAnchor()) {
+            return anchorHit(false, x, y);
+        }
+        PortHit hit = portAt(inputs(), true, 0, x, y);
         return hit != null ? hit : portAt(type.outputs(), false, width(), x, y);
     }
 
-    private static PortHit portAt(List<GraphPort> ports, boolean input, double portX, double x, double y) {
+    PortHit anchorHit(boolean input, double x, double y) {
+        double reach = Math.max(PORT_REACH, view.grid() / 2.0 + 1);
+        if (Math.abs(x - width() / 2.0) > reach || Math.abs(y - height() / 2.0) > reach) {
+            return null;
+        }
+        return new PortHit(input ? type.inputs().getFirst() : type.outputs().getFirst(), input);
+    }
+
+    private PortHit portAt(List<GraphPort> ports, boolean input, double portX, double x, double y) {
         for (int i = 0; i < ports.size(); i++) {
-            double portY = TITLE + i * ROW + ROW / 2.0 + 1;
+            double portY = portY(i);
             if (Math.abs(x - portX) <= PORT_REACH + 2 && Math.abs(y - portY) <= PORT_REACH) {
                 return new PortHit(ports.get(i), input);
             }
@@ -168,16 +270,28 @@ public class NodeWidget extends Widget {
         if (!view.canEdit()) {
             return true;
         }
-        PortHit hit = portAt(x, y);
+        if (type.isAnchor() && !root().host().shiftDown()) {
+            moving = true;
+            view.dragging(id);
+            dragX = x() + width() / 2f;
+            dragY = y() + height() / 2f;
+            validX = view.snap(dragX);
+            validY = view.snap(dragY);
+            return true;
+        }
+        PortHit hit = type.isAnchor() ? anchorHit(false, x, y) : portAt(x, y);
         if (hit != null) {
             linking = true;
             view.beginLink(this, hit.port(), hit.input(), (float) (x() + x), (float) (y() + y));
             return true;
         }
-        if (y < TITLE) {
+        if (y < titleHeight()) {
             moving = true;
+            view.dragging(id);
             dragX = x();
             dragY = y();
+            validX = x();
+            validY = y();
         }
         return true;
     }
@@ -185,8 +299,8 @@ public class NodeWidget extends Widget {
     @Override
     protected void pointerDrag(double x, double y, double dx, double dy, int button) {
         if (moving) {
-            dragX += (float) (dx / view.zoom());
-            dragY += (float) (dy / view.zoom());
+            dragX += (float) dx;
+            dragY += (float) dy;
             view.requestLayout();
         } else if (linking) {
             view.dragLink((float) (x() + x), (float) (y() + y));
@@ -196,8 +310,13 @@ public class NodeWidget extends Widget {
     @Override
     protected void pointerUp(double x, double y, int button) {
         if (moving) {
+            settle();
             moving = false;
-            view.moveNode(id, dragX, dragY);
+            view.dragging(-1);
+            view.moveNode(id, validX, validY);
+            if (type.isAnchor()) {
+                view.connectAnchor(id);
+            }
             view.requestLayout();
         } else if (linking) {
             linking = false;
@@ -223,28 +342,11 @@ public class NodeWidget extends Widget {
 
     @Override
     protected void draw(UiCanvas canvas, float partialTick) {
-        Draw.box(canvas, theme(), "panel", view.isSelected(id) ? "focus" : "panel_border", 0, 0, width(), height());
-        canvas.fill(1, 1, width() - 1, TITLE, color(type.color()));
-        canvas.text(font().trim(type.title(), width() - PAD * 2), PAD, 2, 0xFFFFFFFF, true);
-        drawPorts(canvas, type.inputs(), true);
-        drawPorts(canvas, type.outputs(), false);
-    }
-
-    private void drawPorts(UiCanvas canvas, List<GraphPort> ports, boolean input) {
-        int text = color("text_dim");
-        for (int i = 0; i < ports.size(); i++) {
-            GraphPort port = ports.get(i);
-            float portY = TITLE + i * ROW + ROW / 2f + 1;
-            float portX = input ? 0 : width();
-            canvas.circle(portX, portY, PORT + 1, 0xFF000000);
-            canvas.circle(portX, portY, PORT, LinkWidget.kindColor(port.kind()));
-            int labelY = Math.round(portY - font().lineHeight() / 2f);
-            if (input) {
-                canvas.text(port.label(), PAD + 2, labelY, text, false);
-            } else {
-                canvas.text(port.label(), width() - PAD - 2 - font().width(port.label()), labelY, text, false);
-            }
+        if (type.isAnchor()) {
+            view.nodeStyle().drawAnchor(canvas, this);
+            return;
         }
+        view.nodeStyle().drawNode(canvas, this);
     }
 
     private final class NodeLayout implements Layout {

@@ -24,8 +24,9 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
 
     static final float MIN_ZOOM = 0.25f;
     static final float MAX_ZOOM = 3f;
-    private static final int GRID = 16;
-    private static final int SNAP = 4;
+    private int grid = 4;
+    private GraphNodeStyle nodeStyle = GraphNodeStyle.DEFAULT;
+    private GraphLinkStyle linkStyle = GraphLinkStyle.DEFAULT;
 
     private final GraphPalette palette;
     private final Map<Integer, NodeWidget> nodeWidgets = new HashMap<>();
@@ -38,6 +39,10 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
     private boolean linkFromInput;
     private float linkX;
     private float linkY;
+    private float linkStartX;
+    private float linkStartY;
+    private boolean linkDetached;
+    private int dragged = -1;
 
     public NodeGraphView(GraphPalette palette) {
         super(NodeGraph.class, new NodeGraph());
@@ -45,6 +50,46 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
         layout(new GraphLayout());
         clip(true);
         fill();
+    }
+
+    /**
+     * The size of one grid cell. Nodes snap to it and their ports sit on its lines.
+     */
+    public NodeGraphView grid(int grid) {
+        this.grid = Math.max(1, grid);
+        requestLayout();
+        return this;
+    }
+
+    public int grid() {
+        return grid;
+    }
+
+    public NodeGraphView nodeStyle(GraphNodeStyle style) {
+        this.nodeStyle = style == null ? GraphNodeStyle.DEFAULT : style;
+        return this;
+    }
+
+    public GraphNodeStyle nodeStyle() {
+        return nodeStyle;
+    }
+
+    public NodeGraphView linkStyle(GraphLinkStyle style) {
+        this.linkStyle = style == null ? GraphLinkStyle.DEFAULT : style;
+        requestLayout();
+        return this;
+    }
+
+    public GraphLinkStyle linkStyle() {
+        return linkStyle;
+    }
+
+    public float panX() {
+        return contentX;
+    }
+
+    public float panY() {
+        return contentY;
     }
 
     public GraphPalette palette() {
@@ -114,6 +159,42 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
         return contentScale;
     }
 
+    /**
+     * The node under the pointer, including through its body widgets, or null.
+     */
+    public GraphNode hoveredNode() {
+        if (dragged >= 0) {
+            return graph().node(dragged);
+        }
+        if (root() == null) {
+            return null;
+        }
+        for (Widget widget = root().hovered(); widget != null; widget = widget.parent()) {
+            if (widget instanceof NodeWidget node && nodeWidgets.get(node.nodeId()) == node) {
+                return node.node();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Every node's rectangle in graph space as a flat {@code x, y, width, height, ...} array.
+     */
+    public float[] obstacles() {
+        float[] rects = new float[nodeWidgets.size() * 4];
+        int i = 0;
+        for (NodeWidget node : nodeWidgets.values()) {
+            if (node.type().isAnchor()) {
+                continue;
+            }
+            rects[i++] = node.x();
+            rects[i++] = node.y();
+            rects[i++] = node.width();
+            rects[i++] = node.height();
+        }
+        return i == rects.length ? rects : java.util.Arrays.copyOf(rects, i);
+    }
+
     public NodeWidget nodeWidget(int id) {
         return nodeWidgets.get(id);
     }
@@ -132,6 +213,14 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
     @Override
     protected void onAttach() {
         syncWidgets();
+    }
+
+    @Override
+    protected void onDetach() {
+        super.onDetach();
+        if (property().writable()) {
+            property().markChanged();
+        }
     }
 
     @Override
@@ -209,14 +298,123 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
     }
 
     public void removeNode(int id) {
+        GraphNode node = graph().node(id);
+        if (node != null && GraphNodeType.ANCHOR_ID.equals(node.type)) {
+            dissolveAnchor(id);
+            commit();
+            return;
+        }
         if (graph().remove(id)) {
+            pruneAnchors();
             commit();
         }
     }
 
     public void removeLink(GraphLink link) {
         graph().disconnect(link);
+        pruneAnchors();
         commit();
+    }
+
+    /**
+     * Puts an anchor on a link, so the link runs through it.
+     */
+    void splitLink(GraphLink link, float graphX, float graphY) {
+        if (!graph().links.contains(link)) {
+            return;
+        }
+        GraphNode anchor = graph().add(GraphNodeType.ANCHOR_ID, snap(graphX), snap(graphY));
+        graph().disconnect(link);
+        graph().connect(link.from, link.output, anchor.id, "in");
+        graph().connect(anchor.id, "out", link.to, link.input);
+        commit();
+    }
+
+    /**
+     * Removes anchors that no longer sit between a source and a target, so deleting a link takes its bend points along.
+     */
+    void dragging(int id) {
+        dragged = id;
+    }
+
+    /**
+     * Removes an anchor and joins whatever fed it to whatever it fed, so the path stays.
+     */
+    private void dissolveAnchor(int id) {
+        List<GraphLink> in = new ArrayList<>();
+        List<GraphLink> out = new ArrayList<>();
+        for (GraphLink link : graph().links) {
+            if (link.to == id) {
+                in.add(link);
+            } else if (link.from == id) {
+                out.add(link);
+            }
+        }
+        graph().remove(id);
+        for (GraphLink source : in) {
+            for (GraphLink target : out) {
+                NodeWidget from = nodeWidgets.get(source.from);
+                NodeWidget to = nodeWidgets.get(target.to);
+                GraphPort output = from == null ? null : from.type().output(source.output);
+                GraphPort input = to == null ? null : to.type().input(target.input);
+                if (output != null && input != null && (canLink(source.from, output, target.to, input) || from.type().isAnchor() || to.type().isAnchor())) {
+                    graph().connect(source.from, source.output, target.to, target.input);
+                }
+            }
+        }
+    }
+
+    void pruneAnchors() {
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (GraphNode node : new ArrayList<>(graph().nodes)) {
+                if (!GraphNodeType.ANCHOR_ID.equals(node.type)) {
+                    continue;
+                }
+                boolean in = false;
+                boolean out = false;
+                for (GraphLink link : graph().links) {
+                    in |= link.to == node.id;
+                    out |= link.from == node.id;
+                }
+                if (!in || !out) {
+                    graph().remove(node.id);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * After an anchor is moved: if it landed on a free port, joins it.
+     */
+    void connectAnchor(int id) {
+        NodeWidget anchor = nodeWidgets.get(id);
+        GraphNode node = graph().node(id);
+        if (anchor == null || node == null) {
+            return;
+        }
+        for (NodeWidget target : nodeWidgets.values()) {
+            if (target.type().isAnchor()) {
+                continue;
+            }
+            NodeWidget.PortHit hit = target.portAt(node.x - target.x(), node.y - target.y());
+            if (hit == null) {
+                continue;
+            }
+            boolean joined = false;
+            if (hit.input()) {
+                joined = canLink(id, anchor.type().outputs().getFirst(), target.nodeId(), hit.port()) && graph().connect(id, "out", target.nodeId(), hit.port().id());
+            } else if (graph().linkInto(id, "in") == null) {
+                joined = canLink(target.nodeId(), hit.port(), id, anchor.type().inputs().getFirst()) && graph().connect(target.nodeId(), hit.port().id(), id, "in");
+            }
+            if (joined) {
+                dissolveAnchor(id);
+                commit();
+            }
+            return;
+        }
     }
 
     void moveNode(int id, float x, float y) {
@@ -228,8 +426,56 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
         }
     }
 
-    static float snap(float value) {
-        return Math.round(value / SNAP) * SNAP;
+    boolean overlaps(NodeWidget self, float x, float y, int width, int height) {
+        if (self.type().isAnchor()) {
+            return false;
+        }
+        for (NodeWidget other : nodeWidgets.values()) {
+            if (other == self || other.type().isAnchor() || other.width() == 0) {
+                continue;
+            }
+            if (x < other.x() + other.width() + grid && x + width > other.x() - grid && y < other.y() + other.height() + grid && y + height > other.y() - grid) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The closest grid position to a point where a node of this size overlaps no other.
+     */
+    float[] freeSpot(NodeWidget self, float x, float y, int width, int height) {
+        float baseX = snap(x);
+        float baseY = snap(y);
+        if (!overlaps(self, baseX, baseY, width, height)) {
+            return new float[]{baseX, baseY};
+        }
+        for (int ring = 1; ring <= 64; ring++) {
+            float[] best = null;
+            float bestDistance = Float.MAX_VALUE;
+            for (int dy = -ring; dy <= ring; dy++) {
+                for (int dx = -ring; dx <= ring; dx++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dy)) != ring) {
+                        continue;
+                    }
+                    float cx = baseX + dx * grid;
+                    float cy = baseY + dy * grid;
+                    float distance = dx * dx + dy * dy;
+                    if (distance < bestDistance && !overlaps(self, cx, cy, width, height)) {
+                        best = new float[]{cx, cy};
+                        bestDistance = distance;
+                    }
+                }
+            }
+            if (best != null) {
+                return best;
+            }
+        }
+        return new float[]{baseX, baseY};
+    }
+
+    float snap(float value) {
+        return Math.round(value / grid) * grid;
     }
 
     /**
@@ -246,6 +492,9 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
     // Link dragging, driven by the node widget that holds the pointer
 
     void beginLink(NodeWidget from, GraphPort port, boolean input, float graphX, float graphY) {
+        linkDetached = false;
+        linkStartX = graphX;
+        linkStartY = graphY;
         if (input) {
             GraphLink existing = graph().linkInto(from.nodeId(), port.id());
             if (existing != null) {
@@ -253,6 +502,7 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
                 GraphNodeType sourceType = source == null ? null : source.type();
                 GraphPort output = sourceType == null ? null : sourceType.output(existing.output);
                 graph().disconnect(existing);
+                linkDetached = true;
                 commit();
                 if (output != null) {
                     from = source;
@@ -283,7 +533,9 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
             return;
         }
         for (NodeWidget target : nodeWidgets.values()) {
-            NodeWidget.PortHit hit = target.portAt(graphX - target.x(), graphY - target.y());
+            NodeWidget.PortHit hit = target.type().isAnchor()
+                    ? target.anchorHit(!fromInput, graphX - target.x(), graphY - target.y())
+                    : target.portAt(graphX - target.x(), graphY - target.y());
             if (hit == null || hit.input() == fromInput) {
                 continue;
             }
@@ -296,6 +548,30 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
             }
             return;
         }
+        dropAnchor(from, port, fromInput, graphX, graphY);
+    }
+
+    private void dropAnchor(NodeWidget from, GraphPort port, boolean fromInput, float graphX, float graphY) {
+        if (linkDetached) {
+            pruneAnchors();
+            commit();
+            return;
+        }
+        if (!canEdit() || Math.hypot(graphX - linkStartX, graphY - linkStartY) < grid) {
+            return;
+        }
+        for (NodeWidget node : nodeWidgets.values()) {
+            if (!node.type().isAnchor() && graphX >= node.x() && graphX < node.x() + node.width() && graphY >= node.y() && graphY < node.y() + node.height()) {
+                return;
+            }
+        }
+        GraphNode anchor = graph().add(GraphNodeType.ANCHOR_ID, snap(graphX), snap(graphY));
+        if (fromInput) {
+            graph().connect(anchor.id, "out", from.nodeId(), port.id());
+        } else {
+            graph().connect(from.nodeId(), port.id(), anchor.id, "in");
+        }
+        commit();
     }
 
     boolean linking() {
@@ -364,37 +640,25 @@ public class NodeGraphView extends ValueWidget<NodeGraph> {
 
     @Override
     protected void draw(UiCanvas canvas, float partialTick) {
-        canvas.fill(0, 0, width(), height(), color("field"));
-        float step = GRID * contentScale;
-        if (step < 6) {
-            return;
-        }
-        int line = color("track");
-        float startX = ((contentX % step) + step) % step;
-        float startY = ((contentY % step) + step) % step;
-        for (float x = startX; x < width(); x += step) {
-            canvas.fill((int) x, 0, (int) x + 1, height(), line);
-        }
-        for (float y = startY; y < height(); y += step) {
-            canvas.fill(0, (int) y, width(), (int) y + 1, line);
-        }
+        nodeStyle.drawBackground(canvas, this);
+        drawLink(canvas);
     }
 
-    @Override
-    protected void drawOver(UiCanvas canvas, float partialTick) {
+    private void drawLink(UiCanvas canvas) {
         if (linkFrom == null) {
             return;
         }
         UiPoint start = linkFrom.portPoint(linkPort, linkFromInput);
+        float[] route = linkFromInput
+                ? linkStyle.route(snap(linkX), snap(linkY), (float) start.x(), (float) start.y(), grid, obstacles())
+                : linkStyle.route((float) start.x(), (float) start.y(), snap(linkX), snap(linkY), grid, obstacles());
+        canvas.pushClip(0, 0, width(), height());
         canvas.push();
         canvas.translate(contentX, contentY);
         canvas.scale(contentScale, contentScale);
-        if (linkFromInput) {
-            LinkWidget.curve(canvas, linkX, linkY, (float) start.x(), (float) start.y(), 1.5f, LinkWidget.kindColor(linkPort.kind()));
-        } else {
-            LinkWidget.curve(canvas, (float) start.x(), (float) start.y(), linkX, linkY, 1.5f, LinkWidget.kindColor(linkPort.kind()));
-        }
+        linkStyle.draw(canvas, route, linkStyle.color(linkPort.kind(), true, theme()), true);
         canvas.pop();
+        canvas.popClip();
     }
 
     /**

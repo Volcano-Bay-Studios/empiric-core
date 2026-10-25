@@ -137,7 +137,7 @@ public class NodeGraph {
             }
             GraphPort output = palette.type(from.type).output(link.output);
             GraphPort input = palette.type(to.type).input(link.input);
-            if (output == null || input == null || !input.accepts(output) || !inputs.add(link.to + ":" + link.input)) {
+            if (output == null || input == null || !input.shownOn(to) || !input.accepts(output) || !inputs.add(link.to + ":" + link.input)) {
                 continue;
             }
             kept.add(link);
