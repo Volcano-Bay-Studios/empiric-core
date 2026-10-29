@@ -3,7 +3,9 @@ package xyz.volcanobay.empiric.core.ui.graph;
 import xyz.volcanobay.empiric.core.ui.Widget;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 /**
@@ -32,6 +34,7 @@ public final class GraphNodeType {
     private final List<GraphPort> inputs = new ArrayList<>();
     private final List<GraphPort> outputs = new ArrayList<>();
     private Function<NodeContext, Widget> body;
+    private final Map<String, Function<NodeContext, Widget>> portWidgets = new LinkedHashMap<>();
 
     private GraphNodeType(String id) {
         this.id = id;
@@ -133,6 +136,20 @@ public final class GraphNodeType {
     public GraphNodeType body(Function<NodeContext, Widget> body) {
         this.body = body;
         return this;
+    }
+
+    /**
+     * A widget that sits on the same row as a port, opposite its label, such as a toggle for that port.
+     */
+    public GraphNodeType portWidget(String port, Function<NodeContext, Widget> widget) {
+        portWidgets.put(port, widget);
+        return this;
+    }
+
+    public Map<String, Widget> createPortWidgets(NodeContext context) {
+        Map<String, Widget> made = new LinkedHashMap<>();
+        portWidgets.forEach((port, widget) -> made.put(port, widget.apply(context)));
+        return made;
     }
 
     public String id() {

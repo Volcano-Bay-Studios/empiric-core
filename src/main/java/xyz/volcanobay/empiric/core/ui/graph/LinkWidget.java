@@ -147,10 +147,23 @@ public class LinkWidget extends Widget {
         return route;
     }
 
+    private static final java.util.Map<String, Integer> KIND_COLORS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Picks the colour of a port kind, instead of the one made from its name.
+     */
+    public static void kindColor(String kind, int argb) {
+        KIND_COLORS.put(kind, argb);
+    }
+
     /**
      * A steady colour per port kind, so matching ports and their links read at a glance.
      */
     public static int kindColor(String kind) {
+        Integer chosen = KIND_COLORS.get(kind);
+        if (chosen != null) {
+            return chosen;
+        }
         if (kind.equals(GraphPort.ANY)) {
             return 0xFFD0D0D0;
         }

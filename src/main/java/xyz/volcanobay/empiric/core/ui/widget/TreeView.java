@@ -35,6 +35,7 @@ public class TreeView<T> extends ScrollPanel {
     private Function<T, String> label = String::valueOf;
     private Function<T, String> labelColor = item -> "text";
     private Function<T, String> hints = item -> null;
+    private Function<T, Icon> icons;
     private Function<T, List<ContextEntry>> menu = item -> List.of();
     private Predicate<T> draggable = item -> false;
     private BiPredicate<T, T> canDrop = (moved, onto) -> true;
@@ -46,6 +47,14 @@ public class TreeView<T> extends ScrollPanel {
     private List<Entry<T>> shown = List.of();
     private Row dragging;
     private boolean dragActive;
+
+    /**
+     * A small picture drawn in front of a row's label, inside a square of {@code size} pixels at {@code x}, {@code y}.
+     */
+    public interface Icon {
+
+        void draw(UiCanvas canvas, int x, int y, int size, int color);
+    }
 
     private record Entry<T>(T item, int depth, String label, boolean parent, boolean folded) {
 
@@ -71,6 +80,11 @@ public class TreeView<T> extends ScrollPanel {
      */
     public TreeView<T> labelColor(Function<T, String> labelColor) {
         this.labelColor = labelColor;
+        return this;
+    }
+
+    public TreeView<T> icons(Function<T, Icon> icons) {
+        this.icons = icons;
         return this;
     }
 
@@ -304,6 +318,10 @@ public class TreeView<T> extends ScrollPanel {
             return TreeView.this;
         }
 
+        private int iconWidth() {
+            return icons == null ? 0 : font().lineHeight() + 2;
+        }
+
         private int arrowX() {
             return 2 + entry.depth * INDENT;
         }
@@ -405,7 +423,7 @@ public class TreeView<T> extends ScrollPanel {
 
         @Override
         protected int contentWidth() {
-            return root() == null ? 0 : arrowX() + 10 + font().width(entry.label) + 4;
+            return root() == null ? 0 : arrowX() + 10 + iconWidth() + font().width(entry.label) + 4;
         }
 
         @Override
@@ -435,7 +453,13 @@ public class TreeView<T> extends ScrollPanel {
             } else if (entry.parent) {
                 canvas.quad(cx - 2.5f, cy - 1.5f, cx, cy + 1.5f, cx, cy + 1.5f, cx + 2.5f, cy - 1.5f, arrow);
             }
-            canvas.text(entry.label, arrowX() + 10, (height() - font().lineHeight()) / 2 + 1, color(labelColor.apply(entry.item)), false);
+            int textColor = color(labelColor.apply(entry.item));
+            Icon icon = icons == null ? null : icons.apply(entry.item);
+            if (icon != null) {
+                int size = font().lineHeight();
+                icon.draw(canvas, arrowX() + 10, (height() - size) / 2, size, textColor);
+            }
+            canvas.text(entry.label, arrowX() + 10 + iconWidth(), (height() - font().lineHeight()) / 2 + 1, textColor, false);
         }
     }
 }

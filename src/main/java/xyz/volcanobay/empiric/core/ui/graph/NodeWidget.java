@@ -10,6 +10,7 @@ import xyz.volcanobay.empiric.core.ui.widget.Draw;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * One node of a {@link NodeGraphView}. It reads its node from the graph by id each time, so a sync that
@@ -30,6 +31,7 @@ public class NodeWidget extends Widget {
     private final GraphNodeType type;
     private final int id;
     private final Widget body;
+    private final Map<String, Widget> portWidgets;
     private int shownRows = -1;
     private boolean moving;
     private boolean linking;
@@ -48,6 +50,8 @@ public class NodeWidget extends Widget {
         if (body != null) {
             add(body);
         }
+        this.portWidgets = type.createPortWidgets(new NodeContext(view, id));
+        portWidgets.values().forEach(this::add);
         layout(new NodeLayout());
         contextEntry(ContextEntry.of("Duplicate", this::duplicate));
         contextEntry(ContextEntry.of("Disconnect", () -> {
@@ -144,6 +148,57 @@ public class NodeWidget extends Widget {
         return titleHeight() + index * rowHeight() + Math.max(grid, rowHeight() / 2 / grid * grid);
     }
 
+    private static int indexOf(List<GraphPort> ports, String id) {
+        for (int i = 0; i < ports.size(); i++) {
+            if (ports.get(i).id().equals(id)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Whether a port sits on the body row that shares its id instead of taking a row of its own.
+     */
+    public boolean inline(GraphPort port) {
+        return port.toggle() != null && body != null && find(body, port.id()) != null;
+    }
+
+    private static Widget find(Widget from, String id) {
+        if (id.equals(from.id())) {
+            return from;
+        }
+        for (Widget child : from.children()) {
+            Widget found = find(child, id);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Where a port sits from the node's top. Ports with a matching body row sit on that row, the rest stack in order.
+     */
+    public int portY(List<GraphPort> ports, int index) {
+        GraphPort port = ports.get(index);
+        if (inline(port)) {
+            Widget row = find(body, port.id());
+            int top = 0;
+            for (Widget at = row; at != null && at != this; at = at.parent()) {
+                top += at.y();
+            }
+            return top + row.height() / 2;
+        }
+        int slot = 0;
+        for (int i = 0; i < index; i++) {
+            if (!inline(ports.get(i))) {
+                slot++;
+            }
+        }
+        return portY(slot);
+    }
+
     public boolean selected() {
         return view.isSelected(id);
     }
@@ -170,7 +225,13 @@ public class NodeWidget extends Widget {
     }
 
     private int rows() {
-        return Math.max(inputs().size(), type.outputs().size());
+        int inputs = 0;
+        for (GraphPort port : inputs()) {
+            if (!inline(port)) {
+                inputs++;
+            }
+        }
+        return Math.max(inputs, type.outputs().size());
     }
 
     private int bodyTop() {
@@ -182,7 +243,11 @@ public class NodeWidget extends Widget {
         if (type.isAnchor()) {
             return view.grid();
         }
-        return up(Math.max(type.width(), body == null ? 0 : body.measuredWidth() + PAD * 2));
+        int widest = Math.max(type.width(), body == null ? 0 : body.measuredWidth() + PAD * 2);
+        for (Widget extra : portWidgets.values()) {
+            widest = Math.max(widest, extra.measuredWidth() + PAD * 2 + 30);
+        }
+        return up(widest);
     }
 
     @Override
@@ -202,7 +267,7 @@ public class NodeWidget extends Widget {
         }
         List<GraphPort> ports = input ? inputs() : type.outputs();
         int index = Math.max(0, ports.indexOf(port));
-        return new UiPoint(x() + (input ? 0 : width()), y() + portY(index));
+        return new UiPoint(x() + (input ? 0 : width()), y() + portY(ports, index));
     }
 
     /**
@@ -226,7 +291,7 @@ public class NodeWidget extends Widget {
 
     private PortHit portAt(List<GraphPort> ports, boolean input, double portX, double x, double y) {
         for (int i = 0; i < ports.size(); i++) {
-            double portY = portY(i);
+            double portY = portY(ports, i);
             if (Math.abs(x - portX) <= PORT_REACH + 2 && Math.abs(y - portY) <= PORT_REACH) {
                 return new PortHit(ports.get(i), input);
             }
@@ -366,6 +431,21 @@ public class NodeWidget extends Widget {
             if (body != null) {
                 body.setBounds(PAD, bodyTop(), width() - PAD * 2, body.measuredHeight());
             }
+            portWidgets.forEach((port, extra) -> {
+                List<GraphPort> inputs = inputs();
+                int index = indexOf(inputs, port);
+                boolean input = index >= 0;
+                List<GraphPort> ports = input ? inputs : type.outputs();
+                if (!input) {
+                    index = indexOf(ports, port);
+                }
+                if (index < 0) {
+                    return;
+                }
+                int w = extra.measuredWidth();
+                int h = extra.measuredHeight();
+                extra.setBounds(input ? width() - PAD - w : PAD, portY(ports, index) - h / 2, w, h);
+            });
         }
     }
 }

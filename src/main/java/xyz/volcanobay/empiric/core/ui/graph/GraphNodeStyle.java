@@ -57,9 +57,12 @@ public interface GraphNodeStyle {
         int text = node.color("text_dim");
         for (int i = 0; i < ports.size(); i++) {
             GraphPort port = ports.get(i);
-            int portY = node.portY(i);
+            int portY = node.portY(ports, i);
             int portX = input ? 0 : node.width();
             drawPort(canvas, node, port, portX, portY);
+            if (node.inline(port)) {
+                continue;
+            }
             int labelY = Math.round(portY - node.font().lineHeight() / 2f);
             if (input) {
                 canvas.text(port.label(), NodeWidget.PAD + 2, labelY, text, false);
