@@ -27,6 +27,21 @@ public interface UiCanvas {
 
     void text(String text, int x, int y, int color, boolean shadow);
 
+    /**
+     * @param scale Size relative to normal text; {@code x} and {@code y} stay the top left corner
+     */
+    default void text(String text, int x, int y, int color, boolean shadow, float scale) {
+        if (scale == 1) {
+            text(text, x, y, color, shadow);
+            return;
+        }
+        push();
+        translate(x, y);
+        scale(scale, scale);
+        text(text, 0, 0, color, shadow);
+        pop();
+    }
+
     void blit(String texture, int x, int y, int width, int height, float u, float v, int uWidth, int vHeight, int textureWidth, int textureHeight, int tint);
 
     void push();

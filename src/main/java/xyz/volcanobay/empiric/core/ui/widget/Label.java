@@ -14,6 +14,7 @@ public class Label extends ValueWidget<String> {
     private Align align = Align.START;
     private boolean shadow;
     private boolean wrap;
+    private float scale = 1;
     private int laidWidth;
 
     public Label() {
@@ -39,6 +40,15 @@ public class Label extends ValueWidget<String> {
         return this;
     }
 
+    /**
+     * @param scale Text size relative to normal, such as 0.5 for half size
+     */
+    public Label scale(float scale) {
+        this.scale = scale;
+        requestLayout();
+        return this;
+    }
+
     public Label wrap(boolean wrap) {
         this.wrap = wrap;
         requestLayout();
@@ -57,7 +67,7 @@ public class Label extends ValueWidget<String> {
     }
 
     private List<String> lines(int width) {
-        return wrap && width > 0 ? font().wrap(text(), width) : List.of(text());
+        return wrap && width > 0 ? font().wrap(text(), Math.round(width / scale)) : List.of(text());
     }
 
     @Override
@@ -77,12 +87,12 @@ public class Label extends ValueWidget<String> {
         for (String line : lines(wrapWidth())) {
             max = Math.max(max, font().width(line));
         }
-        return max;
+        return Math.round(max * scale);
     }
 
     @Override
     protected int contentHeight() {
-        return root() == null ? 0 : lines(wrapWidth()).size() * font().lineHeight();
+        return root() == null ? 0 : Math.round(lines(wrapWidth()).size() * font().lineHeight() * scale);
     }
 
     @Override
@@ -93,16 +103,16 @@ public class Label extends ValueWidget<String> {
 
     @Override
     protected void draw(UiCanvas canvas, float partialTick) {
-        int lineHeight = font().lineHeight();
+        int lineHeight = Math.round(font().lineHeight() * scale);
         int y = 0;
         int textColor = color(isEnabled() ? color : "text_dim");
         for (String line : lines(wrap ? width() : 0)) {
             int x = switch (align) {
-                case CENTER -> (width() - font().width(line)) / 2;
-                case END -> width() - font().width(line);
+                case CENTER -> (width() - Math.round(font().width(line) * scale)) / 2;
+                case END -> width() - Math.round(font().width(line) * scale);
                 default -> 0;
             };
-            canvas.text(line, x, y, textColor, shadow);
+            canvas.text(line, x, y, textColor, shadow, scale);
             y += lineHeight;
         }
     }

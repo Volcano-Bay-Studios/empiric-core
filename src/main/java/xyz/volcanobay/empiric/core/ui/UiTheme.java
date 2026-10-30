@@ -32,6 +32,8 @@ public class UiTheme {
         int color;
         if (raw != null) {
             color = parse(raw);
+        } else if (key.startsWith("#")) {
+            color = parse(key);
         } else if (this != FALLBACK) {
             color = FALLBACK.color(key);
         } else {
