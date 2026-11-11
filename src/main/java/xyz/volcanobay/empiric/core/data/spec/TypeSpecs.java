@@ -15,6 +15,7 @@ import xyz.volcanobay.empiric.core.data.layout.Accessors;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.RecordComponent;
 import java.util.HashMap;
 import java.util.Map;
@@ -130,7 +131,7 @@ public final class TypeSpecs {
             this.defaults = new Object[components.length];
             Class<?>[] types = new Class<?>[components.length];
             try {
-                MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(type, MethodHandles.lookup());
+                MethodHandles.Lookup lookup = lookupIn(type);
                 for (int i = 0; i < components.length; i++) {
                     RecordComponent component = components[i];
                     Data data = data(type, component);
@@ -142,13 +143,24 @@ public final class TypeSpecs {
                         }
                     }
                     types[i] = component.getType();
+                    component.getAccessor().setAccessible(true);
                     accessors[i] = Accessors.bind(Accessors.ObjectGetter.class, lookup.unreflect(component.getAccessor()));
                     defaults[i] = types[i].isPrimitive() ? Array.get(Array.newInstance(types[i], 1), 0) : null;
                 }
-                this.constructor = Accessors.bind(Function.class, lookup.findConstructor(type, MethodType.methodType(void.class, types))
+                Constructor<?> canonical = type.getDeclaredConstructor(types);
+                canonical.setAccessible(true);
+                this.constructor = Accessors.bind(Function.class, lookup.unreflectConstructor(canonical)
                         .asSpreader(Object[].class, components.length));
             } catch (ReflectiveOperationException e) {
                 throw new DataException("Can't access record " + type.getName(), e);
+            }
+        }
+
+        private static MethodHandles.Lookup lookupIn(Class<?> type) {
+            try {
+                return MethodHandles.privateLookupIn(type, MethodHandles.lookup());
+            } catch (IllegalAccessException e) {
+                return MethodHandles.lookup();
             }
         }
 
